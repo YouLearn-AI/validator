@@ -1,0 +1,30 @@
+{
+  "name": "validator",
+  "version": "1.0.0",
+  "description": "Server used to expose validation endpoints for nodejs specific libraries.",
+  "main": "server.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "NODE_ENV=development node server.mjs",
+    "test": "node test/validator.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/YouLearn-AI/validator.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/YouLearn-AI/validator/issues"
+  },
+  "homepage": "https://github.com/YouLearn-AI/validator#readme",
+  "dependencies": {
+    "@mermaid-js/parser": "^0.6.2",
+    "dompurify": "^3.2.6",
+    "express": "^5.1.0",
+    "jsdom": "^26.1.0",
+    "mermaid": "^11.9.0"
+  }
+}
