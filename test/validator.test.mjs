@@ -25,17 +25,26 @@ const providedDiagram = `graph TD;
     F -- "Importance" --> F1[Scientific Progress Needs Application];
     F1 --> F2[Co-evolution with Society];`;
 
-// Valid diagram using a supported type (pie)
-const validDiagram = `pie\n  "Dogs": 50\n  "Cats": 50`;
+// Valid diagram using a supported type (graph)
+const validDiagram = `graph TD
+    A[Start] --> B{Decision?}
+    B -->|Yes| C[Process]
+    B -->|No| D[End]
+    C --> D`;
 
 async function run() {
+  // Test 1: The provided diagram should fail (has syntax error with parentheses)
   const provided = await validateDiagramSyntax(providedDiagram);
-  assert.equal(provided.valid, false, 'Expected provided diagram to be invalid');
+  assert.equal(provided.valid, false, 'Expected provided diagram to be invalid due to parentheses in labels');
   assert.ok(typeof provided.error === 'string' && provided.error.length > 0, 'Expected an error message');
+  console.log('✓ Test 1 passed: Invalid diagram correctly rejected');
 
+  // Test 2: A valid graph diagram should pass
   const valid = await validateDiagramSyntax(validDiagram);
   assert.equal(valid.valid, true, 'Expected valid diagram to be valid');
-  console.log('All tests passed');
+  console.log('✓ Test 2 passed: Valid diagram correctly accepted');
+  
+  console.log('\nAll tests passed!');
 }
 
 run();
