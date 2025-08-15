@@ -1,0 +1,456 @@
+## Polynomial Terminology
+A **polynomial** `$$p(x)$$` over a (commutative unital) ring `$$R$$` of degree `$$n$$` (for any `$$n \in \mathbb{N}$$`) is a function `$$p: R \to R$$` given by:
+`$$p(x) = \sum_{i=0}^{n} a_i x^i = a_0 + a_1 x + a_2 x^2 + \dots + a_n x^n$$` for all `$$x \in R$$`, where `$$a_0, a_1, \dots, a_n \in R$$` with `$$a_n \neq 0$$` 【5】【12】【20】【29】【39】【50】.
+- The terms `$$a_0, a_1, \dots, a_n$$` are called **coefficients** 【17】【25】【34】【44】【55】.
+- `$$a_n$$` is the **leading coefficient** of `$$p(x)$$` 【17】【25】【34】【44】【55】.
+- `$$a_0$$` is the **constant term** of `$$p(x)$$` 【17】【25】【34】【44】【55】.
+- A polynomial `$$p(x)$$` is a **monic polynomial** if its leading coefficient is `$$1$$` 【26】【35】【45】【56】.
+- The **degree** of a polynomial `$$p(x)$$`, written `$$\deg(p(x))$$` or `$$\deg(p)$$`, is the largest power of `$$x$$` in `$$p(x)$$`. In the general form, `$$\deg(p(x)) = n$$` 【36】【46】【57】.
+- The **zero polynomial** is the function `$$z: R \to R$$` given by `$$z(x) = 0$$` for all `$$x \in R$$` (where `$$0$$` is the additive identity in `$$R$$`) 【47】【58】. The degree of the zero polynomial is undefined, but for practical purposes, it is treated as `$$-\infty$$` 【59】.
+
+## Ring of Polynomials
+- The set of all polynomials over a ring `$$R$$` is denoted `$$R[x]$$` 【62】【65】【69】.
+- **Fact**: `$$R[x]$$` is itself a (commutative unital) ring under the usual operations of addition and multiplication 【66】【70】.
+
+### Polynomial Arithmetic – Examples
+(Note: The source provides examples but no working solutions.)
+- Sum of `$$x^2 + 2x + 3$$` and `$$3x^3 - 2x + 1$$` in `$$\mathbb{Z}[x]$$` 【74】.
+- Sum of `$$x^2 + 2x + 3$$` and `$$3x^3 - 2x + 1$$` in `$$\mathbb{Z}_3[x]$$` 【78】.
+- Product of `$$x^2 - x + 3$$` and `$$2x + 1$$` in `$$\mathbb{Z}[x]$$` 【82】.
+- Product of `$$x^2 - x + 3$$` and `$$2x + 1$$` in `$$\mathbb{Z}_3[x]$$` 【86】.
+
+## Units in `$$R[x]$$`
+- **Definition**: A polynomial `$$p(x) \in R[x]$$` is called a **unit** (or invertible) if it has a multiplicative inverse in `$$R[x]$$` 【90】【93】【97】【102】【108】【116】【125】【135】.
+- **Notation**: The **unit group** of a polynomial ring `$$R[x]$$` is the set of all units in `$$R[x]$$`, denoted by `$$R[x]^*$$` 【94】【98】【103】【109】【117】【126】【136】.
+- **Fact**: If `$$F$$` is a field, then `$$F[x]^* = F^*$$` 【99】【104】【110】【118】【127】【137】.
+- **Examples of Unit Groups**:
+    - `$$\mathbb{Q}[x]^* = \mathbb{Q}^*$$` 【113】【121】【130】【140】
+    - `$$\mathbb{Z}[x]^* = \{1, -1\}$$` 【122】【131】【141】
+    - `$$\mathbb{Z}_3[x]^* = \{1, 2\}$$` 【132】【142】
+    - `$$\mathbb{Z}_4[x]^* = \{1, 3\}$$` 【143】
+
+## Divisibility and Irreducibles in `$$R[x]$$`
+- **Definition**: Given two polynomials `$$f(x), g(x) \in R[x]$$` for some ring `$$R$$`, `$$f(x)$$` **divides** `$$g(x)$$`, written `$$f(x) | g(x)$$`, if `$$g(x) = f(x)q(x)$$` for some polynomial `$$q(x) \in R[x]$$` 【146】【149】【155】.
+- **Definition**: An **irreducible polynomial** in `$$R[x]$$` is any `$$p(x) \in R[x]$$` such that:
+    - `$$p(x) \neq 0$$` and `$$p(x) \notin R[x]^*$$`, and
+    - whenever `$$p(x) = f(x)g(x)$$` for polynomials `$$f(x), g(x) \in R[x]$$`, we must have `$$f(x) \in R[x]^*$$` or `$$g(x) \in R[x]^*$$` 【150】【151】【152】【156】【157】【158】.
+    - If `$$F$$` is a field, `$$p(x) \in F[x]$$` is irreducible if and only if whenever `$$p(x) = f(x)g(x)$$` with `$$\deg(f(x)) \le \deg(g(x))$$`, we must have `$$\deg(f(x)) = 0$$` and `$$\deg(g(x)) > 0$$` 【159】.
+- **Theorem (Unique Factorisation in `$$F[x]$$)**: If `$$F$$` is a field, then every polynomial `$$f(x) \in F[x]$$` with degree greater than `$$0$$` has a unique factorisation into irreducible polynomials, up to unit factors. That is, `$$f(x)$$` can be written uniquely in the form:
+    `$$f(x) = c (p_1(x))^{\alpha_1} (p_2(x))^{\alpha_2} \dots (p_k(x))^{\alpha_k}$$`
+    where `$$c \in F^*$$`, each `$$p_1(x), \dots, p_k(x)$$` is a different irreducible monic polynomial in `$$F[x]$$`, and `$$\alpha_1, \dots, \alpha_k \in \mathbb{Z}^+$$` for some `$$k \in \mathbb{Z}^+$$` 【162】【163】【164】【167】【168】【169】.
+
+## Division Theorem in `$$F[x]$$`
+- **Theorem (Division Theorem)**: For any field `$$F$$` and polynomials `$$f(x), g(x) \in F[x]$$` with `$$g(x) \neq 0$$`, there exist unique polynomials `$$q(x), r(x) \in F[x]$$` such that both:
+    `$$f(x) = q(x)g(x) + r(x)$$` and `$$\deg(r(x)) < \deg(g(x))$$` 【173】【174】【177】【178】【182】【183】【188】【189】.
+- `$$q(x)$$` is called the **quotient** and `$$r(x)$$` the **remainder** when `$$f(x)$$` is divided by `$$g(x)$$` 【179】【184】【190】【197】.
+- The zero polynomial can be a remainder, as its degree is `$$-\infty$$` 【185】【191】【198】.
+- **Fact**: The Division Theorem is also true over `$$R[x]$$` for any ring `$$R$$`, as long as the leading coefficient of `$$g(x)$$` is a unit of `$$R$$` 【192】【199】.
+
+### Polynomial Division
+- To find the quotient and remainder, methods like **long division** or **balancing coefficients** can be used 【203】【206】【210】【215】.
+- **Example**: Find the quotient and remainder when `$$2x^4 + 3x^3 + x + 5$$` is divided by `$$x^2 + 2x - 3$$` in `$$\mathbb{Q}[x]$$` 【207】【211】【216】. (Solution not provided in source.)
+
+## Greatest Common Divisors in `$$F[x]$$`
+- **Definition**: For any field `$$F$$`, a **greatest common divisor (GCD)** of two polynomials `$$f(x), g(x) \in F[x]$$` is any polynomial `$$d(x) \in F[x]$$` such that:
+    - both `$$d(x) | f(x)$$` and `$$d(x) | g(x)$$`, and
+    - for all `$$c(x) \in F[x]$$`, if `$$c(x) | f(x)$$` and `$$c(x) | g(x)$$`, then `$$c(x) | d(x)$$` 【220】【221】【222】【225】【226】【227】【231】【232】【233】【238】【239】【240】.
+- There can be more than one GCD for a pair of polynomials. For example, in `$$\mathbb{Z}_5[x]$$`, the GCDs of `$$f(x) = 2x^2 + x$$` and `$$g(x) = x^2 + 4x + 3$$` are `$$2x + 1, x + 3, 4x + 2$$`, and `$$3x + 4$$` 【228】【234】【241】.
+- **Notation**: The **standard greatest common divisor** of two polynomials `$$f(x), g(x) \in F[x]$$`, denoted `$$\gcd(f(x), g(x))$$`, is the monic GCD of `$$f(x)$$` and `$$g(x)$$` (i.e., the GCD whose leading coefficient is `$$1$$`) 【243】.
+    - Example: In `$$\mathbb{Z}_5[x]$$`, `$$\gcd(2x^2 + x, x^2 + 4x + 3) = x + 3$$` 【244】.
+
+## Euclidean Algorithm in `$$F[x]$$`
+- **Algorithm (Euclidean algorithm)**: Given any field `$$F$$` and polynomials `$$f(x), g(x) \in F[x]$$`, repeatedly apply the Division Theorem. First to `$$f(x)$$` and `$$g(x)$$`, then to `$$g(x)$$` and the previous remainder `$$r_0(x)$$`, then to `$$r_0(x)$$` and `$$r_1(x)$$`, and so on, until the algorithm terminates when `$$r_{n+1}(x) = 0$$`. The previous remainder `$$r_n(x)$$` is a GCD of `$$f(x)$$` and `$$g(x)$$` 【247】【250】【254】【258】【264】.
+- When working over polynomial rings, any unit can be factored out from a remainder before applying the Division Theorem to it 【251】【255】【259】【265】.
+- **Theorem (Bézout’s identity)**: Given any field `$$F$$` and polynomials `$$f(x), g(x) \in F[x]$$`, there exist polynomials `$$p(x), q(x) \in F[x]$$` such that:
+    `$$\gcd(f(x), g(x)) = f(x)p(x) + g(x)q(x)$$` 【260】【261】【266】【267】.
+    These polynomials `$$p(x)$$` and `$$q(x)$$` can be found by reversing the Euclidean algorithm or using the extended Euclidean algorithm table 【268】.
+
+### Euclidean Algorithm – Examples
+(Note: The source provides examples but no working solutions.)
+- Find `$$\gcd(f(x), g(x))$$` in `$$\mathbb{Q}[x]$$` for `$$f(x) = x^4 + x^2 - 2x - 4$$` and `$$g(x) = x^3 + x^2 + 2x + 2$$` 【271】【275】.
+- Find `$$p(x), q(x) \in \mathbb{Q}[x]$$` such that `$$\gcd(f(x), g(x)) = f(x)p(x) + g(x)q(x)$$` for the same `$$f(x)$$` and `$$g(x)$$` 【279】【283】.
+- Find `$$\gcd(f(x), g(x))$$` in `$$\mathbb{Z}_3[x]$$` for `$$f(x) = x^4 + x^2 + 2$$` and `$$g(x) = x^2 + 2x + 2$$`, and find `$$p(x), q(x) \in \mathbb{Z}_3[x]$$` such that `$$\gcd(f(x), g(x)) = f(x)p(x) + g(x)q(x)$$` 【287】【291】.
+
+## Polynomial Congruences
+- **Notation**: The **modulo operator** `$$mod$$` returns the remainder when one polynomial is divided by another in `$$F[x]$$` for any field `$$F$$`. Given `$$f(x), g(x) \in F[x]$$` with `$$g(x) \neq 0$$`, `$$f(x) \pmod{g(x)} = r(x)$$` where `$$\deg(r(x)) < \deg(g(x))$$` and `$$f(x) = q(x)g(x) + r(x)$$` for some `$$q(x), r(x) \in F[x]$$` 【308】【313】【320】【328】【337】.
+- **Notation**: Given polynomials `$$f(x), g(x), m(x) \in F[x]$$`, `$$f(x)$$` and `$$g(x)$$` are **congruent modulo** `$$m(x)$$`, written `$$f(x) \equiv g(x) \pmod{m(x)}$$`, to mean `$$f(x) \pmod{m(x)} = g(x) \pmod{m(x)}$$`, or equivalently, `$$m(x) | f(x) - g(x)$$` 【342】.
+
+### Polynomial Congruences – Examples
+(Note: The source provides examples but no working solutions.)
+- In `$$\mathbb{Q}[x]$$`, `$$(x^2 + x + 1) \pmod{(x^2 + 1)}$$` 【315】【322】【330】【339】.
+- In `$$\mathbb{Z}_3[x]$$`, `$$(x^2 - 4) \pmod{(x + 1)}$$` 【323】【331】【340】.
+
+## The Set of Polynomials Modulo `$$m(x)$$`
+- **Definition**: Given any polynomial `$$m(x) \in F[x]$$` with degree `$$n$$`, the **set of polynomials modulo `$$m(x)$$`** is denoted `$$F[x]/\langle m(x) \rangle$$`, and is the algebraic system with elements:
+    `$$\{a_0 + a_1 x + a_2 x^2 + \dots + a_{n-1} x^{n-1} : a_i \in F\}$$`
+    and addition and multiplication operations the same as in `$$F[x]$$`, except always reduced to the remainder with smallest degree modulo `$$m(x)$$` 【345】【346】【347】【350】【351】【352】【356】【357】【358】【363】【364】【365】.
+- **Notation**: `$$"f(x) = g(x) \text{ in } F[x]/\langle m(x) \rangle"$$` means the same as `$$f(x) \equiv g(x) \pmod{m(x)}$$` 【353】【359】【366】.
+- If `$$F$$` is finite, `$$F[x]/\langle m(x) \rangle$$` has exactly `$$|F|^n$$` different elements, where `$$n = \deg(m(x))$$` 【360】【367】.
+- **Example**: List the elements of `$$\mathbb{Z}_3[x]/\langle x^2 + 1 \rangle$$` 【368】. (Solution not provided in source.)
+
+### Polynomial Congruences – Examples
+(Note: The source provides examples but no working solutions.)
+- Find `$$x^5 + 1$$` in `$$\mathbb{Z}_3[x]/\langle x^2 + 1 \rangle$$` 【372】【376】【380】.
+- Find `$$x^5 + 1$$` in `$$\mathbb{Z}_2[x]/\langle x^2 + x + 1 \rangle$$` 【385】【389】.
+
+## Solving Linear Congruences
+To solve the general linear congruence `$$f(x)a(x) \equiv g(x) \pmod{m(x)}$$` in `$$F[x]$$`:
+1.  Find `$$d(x) = \gcd(f(x), m(x))$$`. If `$$d(x) \nmid g(x)$$`, there is no solution 【405】【411】【420】.
+2.  Find polynomials `$$p(x), q(x) \in F[x]$$` such that `$$d(x) = f(x)p(x) + m(x)q(x)$$` (e.g., via the Euclidean algorithm and working backwards) 【412】【413】【414】【421】【422】【423】.
+3.  The general solution is then given by `$$a(x) \equiv \frac{g(x)}{d(x)} p(x) \pmod{\frac{m(x)}{d(x)}}$$` 【424】【425】【426】【427】.
+
+### Solving Linear Congruences – Example
+(Note: The source provides an example but no working solution.)
+- Solve `$$(x^3 + x^2 + 1)a(x) \equiv x^2 \pmod{x^4 + 1}$$` in `$$\mathbb{Z}_2[x]$$` 【430】【433】【437】.
+
+## Chinese Remainder Theorem for Polynomials
+- **Theorem (Chinese Remainder Theorem)**: Suppose that `$$f(x), g_i(x), m_i(x) \in F[x]$$`, and that for the system of congruences:
+    `$$f(x) \equiv g_1(x) \pmod{m_1(x)}$$`
+    `$$f(x) \equiv g_2(x) \pmod{m_2(x)}$$`
+    `$$\dots$$`
+    `$$f(x) \equiv g_t(x) \pmod{m_t(x)}$$`
+    all the moduli are pairwise coprime (i.e., `$$\gcd(m_i(x), m_j(x)) = 1$$` for all `$$i \neq j$$`). Then the system of congruences has a solution, and the solution is unique modulo `$$m_1(x)m_2(x)\dots m_t(x)$$` 【441】【442】【443】【444】【445】【448】【449】【450】【451】【452】【456】【457】【458】【459】【460】.
+- To solve such a system, one takes the same approach as in the integer case: solve the first congruence, substitute the result into the second, and so on 【462】.
+
+### Chinese Remainder Theorem – Example
+(Note: The source provides an example but no working solution.)
+- Solve the system of polynomial congruences in `$$\mathbb{Z}_2[x]$$`:
+    `$$f(x) \equiv x + 1 \pmod{x^2 + x + 1}$$`
+    `$$f(x) \equiv x \pmod{x^3}$$` 【465】【466】【467】【470】【471】【472】.
+
+## Remainder and Factor Theorems
+- **Theorem (Remainder Theorem)**: For any ring `$$R$$`, polynomial `$$f(x) \in R[x]$$`, and `$$a \in R$$`, the remainder when `$$f(x)$$` is divided by `$$x - a$$` is `$$f(a)$$` 【479】【482】【486】【491】【497】【504】.
+- **Corollary (Factor Theorem)**: For any ring `$$R$$`, polynomial `$$f(x) \in R[x]$$`, and `$$a \in R$$`, we have `$$(x - a) | f(x)$$` if and only if `$$f(a) = 0$$` 【488】【493】【499】【506】.
+- **Definition**: Given any ring `$$R$$` and polynomial `$$f(x) \in R[x]$$`, `$$a \in R$$` is a **root** (or zero) of `$$f(x)$$` if `$$f(a) = 0$$` 【494】【500】【507】.
+- **Theorem**: Any polynomial in `$$R[x]$$` of degree `$$n > 0$$` has at most `$$n$$` roots 【501】【508】.
+
+## Irreducible Polynomials over `$$\mathbb{C}$$` and `$$\mathbb{R}$$`
+- **Theorem (Fundamental Theorem of Algebra)**: Every polynomial in `$$\mathbb{C}[x]$$` has at least one root 【516】【520】【525】【531】【538】【546】.
+- **Corollary**: Any polynomial `$$f(x) \in \mathbb{C}[x]$$` with `$$\deg(f(x)) = n$$` has exactly `$$n$$` roots, counting multiplicity 【521】【526】【532】【539】【547】.
+- **Theorem**: A polynomial `$$f(x) \in \mathbb{C}[x]$$` is irreducible if and only if `$$f(x)$$` is linear (i.e., `$$\deg(f(x)) = 1$$`) 【534】【541】【549】.
+- **Theorem**: Every irreducible polynomial `$$f(x) \in \mathbb{R}[x]$$` is either linear or quadratic (i.e., `$$\deg(f(x)) \in \{1, 2\}$$`) 【542】【550】.
+
+### Irreducible Polynomials – Examples
+(Note: The source provides examples but no working solutions.)
+- Write `$$x^4 - 4$$` as a product of irreducible polynomials in:
+    - `$$\mathbb{Q}[x]$$` 【555】【559】【564】【570】【578】【586】【596】
+    - `$$\mathbb{R}[x]$$` 【560】【565】【571】【579】【587】【597】
+    - `$$\mathbb{C}[x]$$` 【566】【572】【580】【588】【598】
+- Show that `$$x^2 + 1$$` is irreducible in `$$\mathbb{Z}_3[x]$$` 【573】【581】【589】【599】.
+- Write `$$x^4 - 4$$` as a product of irreducible polynomials in `$$\mathbb{Z}_3[x]$$` 【591】【601】.
+
+## Irreducible Polynomials over `$$\mathbb{Q}$$` and `$$\mathbb{Z}$$`
+- **Theorem**: A polynomial `$$f(x)$$` with integer coefficients that altogether have a GCD of `$$1$$` is irreducible in `$$\mathbb{Q}[x]$$` if and only if it is irreducible in `$$\mathbb{Z}[x]$$` 【609】【613】【618】【624】. This is due to **Gauss’s lemma**, which states that any polynomial `$$f(x) \in \mathbb{Z}[x]$$` whose coefficients have a GCD of `$$1$$` can only be written as a product of polynomials which have coefficients with a GCD of `$$1$$` 【614】【619】【625】.
+- **Corollary**: A polynomial `$$f(x) \in \mathbb{Q}[x]$$` is irreducible if and only if `$$mf(x)$$` is irreducible in `$$\mathbb{Z}[x]$$`, where `$$m$$` is the lowest common multiple of the denominators of the coefficients of `$$f(x)$$` 【620】【626】.
+
+### Irreducible Polynomials over `$$\mathbb{Q}$$` and `$$\mathbb{Z}$$` – Example
+(Note: The source provides an example but no working solution.)
+- Show that `$$f(x) = \frac{1}{2}x^3 + \frac{5}{4}x^2 - x + \frac{3}{4}$$` is irreducible in `$$\mathbb{Q}[x]$$` 【632】【639】.
+
+## Irreducibility Tests – Degrees of Factors
+- **Theorem**: If `$$f(x) \in R[x]$$` is not irreducible, then `$$f(x)$$` has a factor `$$g(x) \in R[x]$$` with `$$1 \le \deg(g(x)) \le \frac{1}{2} \deg(f(x))$$` 【647】【648】【652】【653】【658】【659】【664】【665】【672】【673】.
+- **Corollary**: To test if `$$f(x) \in R[x]$$` is irreducible where `$$\deg(f(x)) = n > 1$$`, we only have to confirm that `$$g(x) \nmid f(x)$$` for all irreducible monic `$$g(x) \in R[x]$$` with `$$1 \le \deg(g(x)) \le \frac{n}{2}$$` 【667】【668】【675】【676】.
+- When `$$R$$` is finite (e.g., `$$R = \mathbb{Z}_n$$`), these tests can be carried out efficiently 【677】.
+
+### Irreducibility Tests – Degrees of Factors – Example
+(Note: The source provides an example but no working solution.)
+- Show that `$$f(x) = x^3 + x^2 + x + 2$$` is irreducible in `$$\mathbb{Z}_3[x]$$` 【680】.
+
+## Irreducibility Tests – Rational Root Theorem
+- **Theorem (Rational Root Theorem)**: Suppose that `$$f(x) = \sum_{i=0}^n a_i x^i \in \mathbb{Z}[x]$$` is a polynomial with `$$a_n \neq 0$$` and `$$a_0 \neq 0$$`. Then in `$$\mathbb{Q}[x]$$`, each rational root of `$$f(x)$$` can be written as a fraction `$$\frac{p}{q}$$` in simplest form (i.e., with `$$p \in \mathbb{Z}, q \in \mathbb{Z}^+$$`, and `$$\gcd(p, q) = 1$$`) where `$$p | a_0$$` and `$$q | a_n$$` 【684】【687】.
+
+### Irreducibility Tests – Rational Root Theorem – Example
+(Note: The source provides an example but no working solution.)
+- Show that `$$f(x) = x^3 + x^2 + x + 2$$` is irreducible in `$$\mathbb{Q}[x]$$` 【691】【695】.
+
+## Irreducibility Tests – Working in `$$\mathbb{Z}_n[x]$$`
+- **Theorem**: If a polynomial `$$f(x) \in \mathbb{Z}[x]$$` has no roots in `$$\mathbb{Z}_n[x]$$` for some positive integer `$$n$$`, then it has no roots in `$$\mathbb{Z}[x]$$` 【699】.
+- **Theorem**: Suppose `$$f(x) \in \mathbb{Z}[x]$$`, and that `$$p$$` is any prime number such that `$$p$$` does not divide the leading coefficient of `$$f(x)$$`. If `$$f(x)$$` is irreducible in `$$\mathbb{Z}_p[x]$$`, then `$$f(x)$$` is also irreducible in `$$\mathbb{Z}[x]$$` 【703】.
+
+### Irreducibility Tests – Working in `$$\mathbb{Z}_n[x]$$` – Example
+(Note: The source provides an example but no working solution.)
+- Show that `$$f(x) = 3x^3 + 4x^2 + 6x - 5$$` is irreducible in `$$\mathbb{Z}[x]$$` 【707】.
+
+## Irreducibility Tests – Eisenstein’s Criterion
+- **Theorem (Eisenstein’s Criterion)**: Suppose that `$$f(x) = \sum_{i=0}^n a_i x^i \in \mathbb{Z}[x]$$` and that for some prime number `$$p$$`:
+    - `$$p | a_i$$` for all `$$0 \le i \le n - 1$$`,
+    - `$$p \nmid a_n$$`, and
+    - `$$p^2 \nmid a_0$$`.
+    Then `$$f(x)$$` is irreducible in `$$\mathbb{Z}[x]$$` 【711】【712】【713】.
+
+### Irreducibility Tests – Eisenstein’s Criterion – Example
+(Note: The source provides an example but no working solution.)
+- Show that `$$f(x) = x^3 + 2x^2 + 6x + 10$$` is irreducible in `$$\mathbb{Z}[x]$$` 【717】.
+
+## Irreducibility Tests – Linear Substitution
+- **Theorem**: For any `$$a \in \mathbb{Z}$$`, the polynomial `$$f(x) \in \mathbb{Z}[x]$$` is irreducible if and only if the polynomial `$$f(x + a)$$` is irreducible 【725】【730】.
+
+### Irreducibility Tests – Linear Substitution – Example
+(Note: The source provides an example but no working solution.)
+- Show that `$$f(x) = x^3 - x^2 + 5x + 5$$` is irreducible in `$$\mathbb{Z}[x]$$` 【734】.
+
+## Modular Polynomial Rings
+- **Theorem**: Given any ring `$$R$$` and polynomial `$$m(x)$$`, the set `$$R[x]/\langle m(x) \rangle$$` is itself a ring 【742】.
+- **Theorem**: Given any field `$$F$$` and polynomial `$$m(x)$$`, the ring `$$F[x]/\langle m(x) \rangle$$` is itself a field if and only if `$$m(x)$$` is irreducible in `$$F[x]$$` 【746】【750】【756】.
+
+### Modular Polynomial Rings – Examples
+(Note: The source provides examples but no working solutions.)
+- Determine which of the following are fields:
+    - `$$\mathbb{Z}_2[x]/\langle x^2 + x + 1 \rangle$$` 【753】【759】
+    - `$$\mathbb{Z}_2[x]/\langle x^2 + 1 \rangle$$` 【760】
+
+## Finite Fields
+- **Definition**: A **finite field** is a field with a finite number of elements 【763】【766】【771】【777】【784】.
+- **Definition**: The **characteristic** of a finite field `$$F$$` is the smallest `$$n \in \mathbb{Z}^+$$` such that `$$\sum_{i=1}^n 1 = 1 + 1 + \dots + 1 \text{ (n copies)} = 0$$` in `$$F$$` 【767】【768】【772】【773】【778】【779】【785】【786】.
+- Consider the field `$$F = \mathbb{Z}_p[x]/\langle m(x) \rangle$$`, where `$$p$$` is a prime number and `$$\deg(m(x)) = k \in \mathbb{Z}^+$$` with `$$m(x)$$` irreducible in `$$\mathbb{Z}_p[x]$$`. Then:
+    - `$$F$$` has characteristic `$$p$$` 【781】【788】.
+    - `$$F$$` has `$$p^k$$` elements (sometimes called order `$$p^k$$`) 【789】.
+- **Theorem**: The characteristic of any finite field is a prime number 【792】【796】【801】.
+- **Theorem**: The size (or order) of any finite field is `$$p^k$$` for some prime number `$$p$$` and positive integer `$$k$$` 【798】【803】.
+- **Theorem**: For every prime number `$$p$$` and positive integer `$$k$$`, there exists a finite field of size (or order) `$$p^k$$` 【811】【815】【820】【826】【833】【841】.
+- **Definition (loose)**: Two rings `$$R$$` and `$$S$$` are **isomorphic**, written `$$R \cong S$$`, if each element in `$$R$$` can be mapped to a different element in `$$S$$` such that their addition and multiplication tables are identical under the mapping. Example: `$$\mathbb{Z}[x]/\langle x^2 + 1 \rangle \cong \mathbb{Z}[i]$$` by mapping `$$x \mapsto i$$` 【816】【821】【827】【834】【842】.
+- **Theorem**: For a given prime number `$$p$$` and positive integer `$$k$$`, there is only one finite field of size `$$p^k$$` up to isomorphism 【822】【828】【835】【843】.
+- **Definition**: The finite field of size `$$p^k$$` is called the **Galois field of order `$$p^k$$`** and denoted as `$$GF(p^k)$$`, or more commonly, as `$$\mathbb{F}_{p^k}$$` (or just `$$\mathbb{F}_q$$` where `$$q = p^k$$`) 【829】【836】【844】.
+- **Corollary**: `$$\mathbb{F}_{p^k} \cong \mathbb{Z}_p[x]/\langle m(x) \rangle$$` for any irreducible polynomial `$$m(x)$$` in `$$\mathbb{Z}_p[x]$$` with degree `$$k$$` 【837】【845】. These theorems allow for the complete characterization and construction of every possible finite field 【846】.
+
+### Finite Fields – Examples
+(Note: The source provides an example table but no working solutions.)
+- Construct a finite field of size `$$n$$` for `$$n$$` between `$$1$$` and `$$10$$` 【849】【852】.
+<whiteboard type="timeline" title="Finite Field Construction Examples" identifier="finite_field_construction">
+
+  <event date="n=1">
+    <title>F1</title>
+    <description>Trivial field (not typically considered)</description>
+  </event>
+  <event date="n=2">
+    <title>F2</title>
+    <description>Z2</description>
+  </event>
+  <event date="n=3">
+    <title>F3</title>
+    <description>Z3</description>
+  </event>
+  <event date="n=4">
+    <title>F4</title>
+    <description>Z2[x]/&lt;x^2+x+1&gt;</description>
+  </event>
+  <event date="n=5">
+    <title>F5</title>
+    <description>Z5</description>
+  </event>
+  <event date="n=6">
+    <title>F6</title>
+    <description>Not a power of a prime, so no finite field of this size.</description>
+  </event>
+  <event date="n=7">
+    <title>F7</title>
+    <description>Z7</description>
+  </event>
+  <event date="n=8">
+    <title>F8</title>
+    <description>Z2[x]/&lt;x^3+x+1&gt; or Z2[x]/&lt;x^3+x^2+1&gt;</description>
+  </event>
+  <event date="n=9">
+    <title>F9</title>
+    <description>Z3[x]/&lt;x^2+1&gt; or Z3[x]/&lt;x^2+x+2&gt; or Z3[x]/&lt;x^2+2x+2&gt;</description>
+  </event>
+  <event date="n=10">
+    <title>F10</title>
+    <description>Not a power of a prime, so no finite field of this size.</description>
+  </event>
+
+</whiteboard>
+【853】【854】【855】【856】【857】【858】【859】【860】【861】【862】
+
+## Order and Primitive Elements in Finite Fields
+- For `$$F_q = \mathbb{F}_{p^k}$$` where `$$p$$` is a prime number and `$$k \in \mathbb{Z}^+$$` (so `$$q = p^k$$`) 【865】【868】【872】【877】【883】【890】【898】【907】【917】.
+- In any field `$$F$$`, every element except `$$0$$` is a unit, so `$$F^* = F - \{0\}$$` 【869】【873】【878】【884】【891】【899】【908】【918】.
+- **Definition**: Given any `$$\alpha \in F_q^*$$`, the **order of `$$\alpha$$` in `$$F_q$$`**, written `$$\text{ord}_{F_q}(\alpha)$$`, is the smallest positive integer `$$t$$` such that `$$\alpha^t = 1$$` in `$$F_q$$` 【874】【879】【885】【892】【900】【909】【919】.
+- **Theorem (Generalisation of Fermat’s Little Theorem)**: For any `$$\alpha \in F_q^*$$`, we have `$$\alpha^{q-1} = 1$$` in `$$F_q$$`. Equivalently, for any `$$\alpha \in F_q$$`, we have `$$\alpha^q = \alpha$$` in `$$F_q$$` 【895】【903】【912】【922】.
+- **Theorem**: For any `$$\alpha \in F_q^*$$`, we have that `$$\text{ord}_{F_q}(\alpha) | q - 1$$` 【904】【913】【923】.
+- **Definition**: A **primitive element** of `$$F_q$$` (or of `$$F_q^*$$`) is any element `$$\alpha \in F_q^*$$` such that `$$\text{ord}_{F_q}(\alpha) = q - 1$$` 【914】【924】.
+- **Theorem**: If `$$\alpha$$` is a primitive element of `$$F_q$$`, then `$$\alpha$$` is a generator of `$$F_q^*$$`. That is, `$$\langle \alpha \rangle = \{\alpha^0, \alpha^1, \alpha^2, \dots, \alpha^{q-1}\} = F_q^*$$` 【925】.
+
+## Finding Primitive Elements
+- **Theorem**: Every finite field `$$F_q$$` has a primitive element 【928】【931】【935】【940】【946】【953】【961】【970】【980】.
+- **Method to find a primitive element of `$$F_q = \mathbb{Z}_p[x]/\langle m(x) \rangle$$` (where `$$m(x)$$` is irreducible of degree `$$k$$`)**:
+    1.  Choose `$$\alpha$$` to be a root of `$$m(x)$$` in `$$\mathbb{Z}_p[x]$$` (i.e., let `$$\alpha$$` be an element of `$$F_q$$` satisfying `$$m(\alpha) = 0$$`) 【943】【949】【956】【964】【973】【983】.
+    2.  For each prime divisor `$$p_i$$` of `$$q - 1$$`, check `$$\alpha^{(q-1)/p_i}$$` in `$$F_q$$` 【950】【957】【965】【974】【984】.
+    3.  If `$$\alpha^{(q-1)/p_i} \neq 1$$` in `$$F_q$$` for all prime divisors `$$p_i$$`, then `$$\alpha$$` is a primitive element of `$$F_q$$` 【958】【966】【975】【985】.
+    4.  Otherwise, test a new element `$$\beta = \alpha + 1$$`, and so on 【967】【976】【986】.
+- **Theorem**: Given `$$\alpha$$` is a primitive element of `$$F_q$$`, `$$\alpha^t$$` is a primitive element of `$$F_q$$` if and only if `$$\gcd(t, q - 1) = 1$$` 【977】【987】【998】.
+- **Corollary**: Every finite field `$$F_q$$` has exactly `$$\phi(q - 1)$$` primitive elements 【988】【999】.
+
+### Primitive Elements – Examples
+(Note: The source provides examples but no working solutions.)
+- Find the primitive elements of `$$F = \mathbb{Z}_2[x]/\langle x^2 + x + 1 \rangle$$` 【1003】.
+- Find the primitive elements of `$$F = \mathbb{Z}_3[x]/\langle x^2 + 1 \rangle$$` 【1006】【1009】.
+
+## Arithmetic using Primitive Elements
+- A table of powers for a primitive element can be constructed to simplify arithmetic in a finite field. For example, for `$$\beta = x + 1$$` in `$$F = \mathbb{Z}_3[x]/\langle x^2 + 1 \rangle$$` 【1012】【1015】【1016】【1019】【1020】.
+<whiteboard type="barchart" title="Powers of Primitive Element in Z3[x]/&lt;x^2+1&gt;" identifier="primitive_element_powers">
+
+  <labels>
+    <label>t=0</label>
+    <label>t=1</label>
+    <label>t=2</label>
+    <label>t=3</label>
+    <label>t=4</label>
+    <label>t=5</label>
+    <label>t=6</label>
+    <label>t=7</label>
+    <label>t=8</label>
+  </labels>
+  <dataset label="Value (Polynomial Representation)">
+    <data>1, 10, 20, 11, 2, 21, 01, 12, 1</data>
+  </dataset>
+
+</whiteboard>
+(Note: The data values in the chart represent the coefficients of the polynomial in `$$Z_3[x]$$`. For example, `$$x+1$$` is `$$10$$` (1x + 0), `$$2x$$` is `$$20$$`, `$$x+2$$` is `$$12$$`, etc. This is a conceptual representation as direct numerical plotting of polynomials is not standard for bar charts.)
+- This table can be used as a look-up table to convert terms to powers of the primitive element and back, making arithmetic easier 【1021】【1026】.
+
+### Arithmetic using Primitive Elements – Examples
+(Note: The source provides examples but no working solutions.)
+- Evaluate `$$(2x + 1)^5$$` in `$$F = \mathbb{Z}_3[x]/\langle x^2 + 1 \rangle$$` 【1028】【1035】【1044】.
+- Evaluate `$$\frac{(x + 2)^2}{x^3}$$` in `$$F = \mathbb{Z}_3[x]/\langle x^2 + 1 \rangle$$` 【1036】【1037】【1045】【1046】.
+- Evaluate `$$\frac{\beta^5 + \beta^3}{\beta^3 + \beta^2 + 1}$$` in `$$F = \mathbb{Z}_3[x]/\langle x^2 + 1 \rangle$$` 【1047】【1048】.
+
+## Finite Fields as Vector Spaces
+- **Theorem**: If `$$\alpha$$` is a primitive element of a finite field `$$F_q$$` (with `$$q = p^k$$`), then `$$F_q$$` is a vector space over `$$\mathbb{Z}_p[x]$$` with basis `$$\{1, \alpha, \alpha^2, \dots, \alpha^{k-1}\}$$` 【1060】.
+- This means every element of `$$F_q$$` can be written as a unique linear combination of `$$1, \alpha, \alpha^2, \dots, \alpha^{k-1}$$` over `$$\mathbb{Z}_p[x]$$` 【1061】.
+
+## Irreducible Factors
+- From the generalization of Fermat’s little theorem, for any `$$\alpha \in F_q$$`, we have `$$\alpha^q = \alpha$$`. Thus, every element of `$$F_q$$` is a root of the polynomial `$$x^q - x$$` 【1073】【1078】.
+- **Theorem**: Every irreducible polynomial in `$$\mathbb{Z}_p[x]$$` of degree `$$k$$` is a factor of `$$x^q - x$$` where `$$q = p^k$$` 【1074】【1079】.
+
+### Irreducible Factors – Example
+(Note: The source provides an example but no working solution.)
+- Find all irreducible cubic polynomials in `$$\mathbb{Z}_2[x]$$` 【1083】.
+
+## Minimal Polynomials
+- **Definition**: Given any `$$\alpha \in F_q \cong \mathbb{Z}_p[x]/\langle m(x) \rangle$$`, the **minimal polynomial of `$$\alpha$$` in `$$\mathbb{Z}_p[x]$$`**, denoted `$$m_\alpha(x)$$`, is the monic polynomial of smallest degree such that `$$m_\alpha(\alpha) = 0$$` 【1091】.
+- **Theorem**: Given any `$$\alpha \in F_q$$`, the minimal polynomial of `$$\alpha$$` in `$$\mathbb{Z}_p[x]$$` is unique 【1094】【1098】.
+- **Corollary**: Given any `$$\alpha \in F_q$$` and a monic polynomial `$$f(x) \in \mathbb{Z}_p[x]/\langle m(x) \rangle$$` such that `$$f(\alpha) = 0$$`, if `$$f(x)$$` is irreducible in `$$\mathbb{Z}_p[x]$$` then it is the minimal polynomial of `$$\alpha$$` in `$$\mathbb{Z}_p[x]$$` 【1100】.
+
+### Finding Minimal Polynomials
+- **Theorem**: Suppose `$$\alpha \in F_q$$` and `$$r$$` is the smallest positive integer such that `$$\alpha^{p^r} = \alpha$$` in `$$F$$`. Then the minimal polynomial of `$$\alpha$$` is given by:
+    `$$m_\alpha(x) = (x - \alpha)(x - \alpha^p)(x - \alpha^{p^2}) \dots (x - \alpha^{p^{r-1}})$$` 【1103】【1104】【1107】【1108】【1112】【1113】【1118】【1119】【1125】【1126】【1134】【1135】【1144】【1145】. This formula is often computationally intensive 【1115】【1121】【1128】【1137】.
+- **Method to find the minimal polynomial of any element `$$\beta \in F_q$$` (where `$$q = p^k$$`)**:
+    1.  Find a primitive element `$$\alpha$$` of `$$F_q$$` 【1131】【1140】【1150】.
+    2.  Write each element `$$\beta^0, \beta^1, \beta^2, \dots, \beta^k$$` as a linear combination of the basis `$$\{1, \alpha, \alpha^2, \dots, \alpha^{k-1}\}$$` 【1141】【1151】.
+    3.  Find the nontrivial linear combination of `$$\{\beta^0, \beta^1, \dots, \beta^k\}$$` that equals `$$0$$` and, as a polynomial in `$$\beta$$`, is monic and of lowest possible degree. Replacing each `$$\beta$$` with `$$x$$` then gives the minimal polynomial `$$m_\beta(x)$$` in `$$F_q$$` 【1152】.
+
+### Minimal Polynomials – Examples
+(Note: The source provides examples but no working solutions.)
+- Consider `$$F = \mathbb{Z}_2[x]/\langle x^3 + x^2 + 1 \rangle$$` and let `$$\alpha$$` be a root of `$$x^3 + x^2 + 1$$`. Given that `$$\alpha$$` is primitive in `$$F$$`, find the minimal polynomials of `$$\alpha$$` and `$$\alpha^2$$` 【1155】【1159】.
+- Again, consider `$$F = \mathbb{Z}_2[x]/\langle x^3 + x^2 + 1 \rangle$$` and let `$$\alpha$$` be a root of `$$x^3 + x^2 + 1$$`, which is primitive in `$$F$$`. Find the minimal polynomial of `$$\alpha^3$$` 【1163】.
+
+## Cyclotomic Cosets
+- **Theorem**: Suppose `$$p$$` is prime and `$$f(x) \in \mathbb{Z}_p[x]$$`. If `$$\alpha$$` is a root of `$$f(x)$$`, then `$$\alpha^p$$` is a root of `$$f(x)$$` 【1168】【1172】【1178】【1187】.
+- **Corollary**: Suppose `$$\alpha \in F_q$$` and `$$r$$` is the smallest positive integer such that `$$\alpha^{p^r} = \alpha$$` in `$$F$$`. Then the minimal polynomial of `$$\alpha$$` is given by `$$m_\alpha(x) = (x - \alpha)(x - \alpha^p)(x - \alpha^{p^2}) \dots (x - \alpha^{p^{r-1}})$$` 【1174】【1175】【1180】【1181】【1189】【1190】.
+- **Definition**: Let `$$q = p^k$$` for a prime `$$p$$` and `$$k \in \mathbb{Z}^+$$`, and let `$$s \in \mathbb{Z}_{q-1}$$`. The **cyclotomic coset** for `$$\mathbb{Z}_{q-1}$$` containing `$$s$$` is the set `$$K_s = \{sp^i \pmod{q-1} : i \in \mathbb{N}\} = \{s, sp, sp^2, sp^3, \dots \}$$` in `$$\mathbb{Z}_{q-1}$$` 【1183】【1184】【1192】【1193】.
+- **Corollary**: If `$$\alpha$$` is primitive in `$$F_q$$`, then the minimal polynomial of `$$\alpha^s$$` for any integer `$$s$$` is also the minimal polynomial of `$$\alpha^t$$` for all `$$t \in K_s$$` 【1194】.
+
+### Cyclotomic Cosets – Examples
+(Note: The source provides examples but no working solutions.)
+- Find the cyclotomic cosets associated with `$$F_8$$` 【1197】.
+- Consider `$$F = \mathbb{Z}_2[x]/\langle x^3 + x^2 + 1 \rangle$$` and let `$$\alpha$$` be a root of `$$x^3 + x^2 + 1$$`, which is primitive in `$$F$$`. Find the minimal polynomials of `$$\alpha^4, \alpha^5, \alpha^6$$`, and `$$\alpha^7$$` 【1201】.
+
+## Hamming Codes as Polynomials
+- Hamming codes can be interpreted in terms of polynomials. For a non-standard Hamming matrix `$$H$$` and a root `$$\alpha$$` of `$$x^3 + x + 1$$` in `$$F = \mathbb{Z}_2[x]/\langle x^3 + x + 1 \rangle$$`, if `$$x = (a_0, a_1, \dots, a_6)$$` is a valid encoded message (such that `$$Hx^T = 0$$`), then `$$\alpha$$` is a root of `$$f(x) = \sum_{i=0}^6 a_i x^i$$` 【1209】【1210】【1215】【1218】【1219】【1220】【1221】【1224】【1225】【1229】【1230】【1231】【1232】【1233】【1236】【1237】【1241】【1242】【1245】.
+- If a received message `$$y$$` has an error in its `$$i$$`-th digit such that `$$Hy^T$$` is the `$$i$$`-th column of `$$H$$`, then `$$(1, \alpha, \alpha^2)Hy^T = \alpha^i$$` 【1246】.
+
+## BCH Codes
+- **Bose-Chaudhuri-Hocquenghem (BCH) codes** are a special class of error-correcting codes that expand upon the polynomial interpretation of Hamming codes 【1249】【1252】【1257】【1263】.
+- BCH codes are efficient, having a high **information rate** (ratio of information digits to total digits) 【1253】【1258】【1264】. For example, the Hamming code described has an information rate of `$$\frac{4}{7}$$` 【1254】【1259】.
+- BCH codes involve converting a digital message to a polynomial (digits as coefficients). **Encoding** adds check digits determined by polynomial division. **Decoding** simplifies the polynomial using finite field arithmetic to detect error number and position 【1260】【1266】.
+- The standard conversion method for this course is to arrange polynomial terms in increasing order of exponents of `$$x$$`, reading message coefficients from left to right 【1267】.
+
+### Single Error-Correcting BCH Codes – Encoding
+- Encodes base-`$$p$$` messages of length `$$r$$` information digits to include `$$s$$` check digits, where `$$r + s = p^k - 1$$` and `$$s = k$$` 【1270】【1273】【1277】【1282】【1288】【1295】【1304】【1317】.
+- **Set-up**:
+    1.  Choose an irreducible polynomial `$$f(x)$$` of degree `$$k$$` in `$$\mathbb{Z}_p[x]$$`, and set `$$F = \mathbb{Z}_p[x]/\langle f(x) \rangle$$` 【1279】【1284】【1290】【1297】【1306】【1319】.
+    2.  Find a primitive element `$$\alpha$$` in `$$F$$` and its minimal polynomial `$$m_\alpha(x)$$` 【1285】【1291】【1298】【1307】【1320】.
+- **Encoding (given message `$$(a_0, a_1, \dots, a_{r-1})$$)**:
+    1.  Write the information polynomial `$$I(x) = x^s \sum_{i=0}^{r-1} a_i x^i$$` 【1300】【1301】【1309】【1310】【1322】【1323】.
+    2.  Find the check polynomial `$$R(x) = I(x) \pmod{M(x)}$$` where `$$M(x) = m_\alpha(x)$$`. `$$R(x) = \sum_{i=0}^{s-1} c_i x^i$$` where `$$c_i$$` are the check digits 【1311】【1312】【1313】【1314】【1324】【1325】【1326】【1327】.
+    3.  Write the codeword polynomial `$$C(x) = -R(x) + I(x)$$`. For `$$p=2$$`, `$$C(x) = R(x) + I(x)$$`. Transmit the coefficients of `$$C(x)$$`, which form the vector `$$(c_0, c_1, \dots, c_{s-1}, a_0, a_1, \dots, a_{r-1})$$` 【1328】.
+
+### Single Error-Correcting BCH Codes – Decoding
+- **Decoding (given received message `$$(d_0, d_1, \dots, d_{r+s-1})$$)**:
+    1.  Write the received polynomial `$$D(x) = \sum_{i=0}^{r+s-1} d_i x^i$$` 【1338】【1339】【1344】【1345】【1353】【1354】【1361】【1362】【1371】【1372】.
+    2.  Evaluate `$$D(\alpha)$$` in `$$F$$` (e.g., using a power table) 【1347】【1355】【1364】【1374】.
+        - If `$$D(\alpha) = 0$$`, there is no error 【1356】【1365】【1375】.
+        - Otherwise, `$$D(\alpha) = \alpha^i$$` for some `$$0 \le i \le k-1$$`. Assuming at most one error, the error exists at the coefficient of `$$x^i$$` (the `$$(i+1)$$`-th digit) 【1366】【1376】.
+    3.  Correct any error and extract the original message as the last `$$r$$` coefficients of the corrected polynomial, i.e., `$$(d_s, d_{s+1}, \dots, d_{r+s-1})$$` 【1377】.
+
+### Single Error-Correcting BCH Codes – Example
+(Note: The source provides examples but no working solutions.)
+- Let `$$\alpha$$` be a root of `$$x^3 + x + 1$$`. A single error-correcting BCH code is constructed over `$$F = \mathbb{Z}_2[x]/\langle x^3 + x + 1 \rangle$$` using `$$\alpha$$`. How would the message `$$(1, 0, 1, 1)$$` be encoded? 【1380】【1384】.
+- Using the same BCH code, assuming at most one error, decode the received message `$$(1, 0, 1, 0, 1, 0, 1)$$` 【1388】【1392】.
+
+### Double Error-Correcting BCH Codes – Encoding
+- Encodes base-`$$p$$` messages of length `$$r$$` information digits to include `$$s$$` check digits, where `$$s$$` is the degree of the modulus polynomial and `$$r + s = p^k - 1$$` 【1396】【1399】【1403】【1408】【1414】【1421】【1428】【1438】【1449】.
+- **Set-up**:
+    1.  Choose an irreducible polynomial `$$f(x)$$` of degree `$$k$$` in `$$\mathbb{Z}_p[x]$$`, and set `$$F = \mathbb{Z}_p[x]/\langle f(x) \rangle$$` 【1405】【1410】【1416】【1423】【1430】【1440】【1451】【1465】.
+    2.  Find a primitive element `$$\alpha$$` in `$$F$$` and its minimal polynomial `$$m_\alpha(x)$$` 【1411】【1417】【1424】【1431】【1441】【1452】【1466】.
+    3.  Find some positive integer `$$t$$` not in the cyclotomic coset `$$K_1$$` (often the smallest), and setting `$$\beta = \alpha^t$$`, find its minimal polynomial `$$m_\beta(x)$$` 【1418】【1425】【1433】【1442】【1453】【1467】.
+- **Encoding (given message `$$(a_0, a_1, \dots, a_{r-1})$$)**:
+    1.  Set the modulus polynomial `$$M(x) = m_\alpha(x)m_\beta(x)$$`, and `$$s = \deg(M(x))$$` 【1435】【1444】【1455】【1469】.
+    2.  Write the information polynomial `$$I(x) = x^s \sum_{i=0}^{r-1} a_i x^i$$` 【1445】【1446】【1456】【1457】【1470】【1471】.
+    3.  Find the check polynomial `$$R(x) = I(x) \pmod{M(x)} = \sum_{i=0}^{s-1} c_i x^i$$` 【1458】【1459】【1460】【1472】【1473】【1474】.
+    4.  Write the codeword polynomial `$$C(x) = R(x) + I(x)$$`, and transmit the coefficients of `$$C(x)$$`, i.e., the vector `$$(c_0, c_1, \dots, c_{s-1}, a_0, a_1, \dots, a_{r-1})$$` 【1475】.
+
+### Double Error-Correcting BCH Codes – Decoding
+- **Decoding (given received message `$$(d_0, d_1, \dots, d_{r+s-1})$$)**:
+    1.  Write the received polynomial `$$D(x) = \sum_{i=0}^{r+s-1} d_i x^i$$` 【1483】【1484】【1485】【1490】【1491】【1492】【1498】【1499】【1500】【1507】【1508】【1509】【1517】【1518】【1519】【1528】【1529】【1530】【1541】【1542】【1543】.
+    2.  Evaluate `$$D(\alpha)$$` in `$$F$$` (e.g., using a power table) 【1493】【1501】【1510】【1520】【1531】【1544】.
+        - If `$$D(\alpha) = 0$$`, there is no error 【1502】【1511】【1521】【1532】【1545】.
+        - Otherwise, evaluate `$$D(\beta) = D(\alpha^t)$$` 【1512】【1522】【1533】【1546】.
+    3.  If `$$D(\alpha^t) = (D(\alpha))^t$$`, then there is a single error at the coefficient of `$$x^i$$` where `$$D(\alpha) = \alpha^i$$` 【1523】【1534】【1547】.
+    4.  If `$$D(\alpha^t) \neq (D(\alpha))^t$$`, then there are two errors at the coefficients of `$$x^i$$` and `$$x^j$$` where `$$D(\alpha) = \alpha^i + \alpha^j$$` and `$$D(\alpha^t) = \alpha^{it} + \alpha^{jt}$$`. Find `$$i$$` and `$$j$$` by trial and error using the power table of `$$\alpha$$` 【1535】【1536】【1548】【1549】.
+    5.  Correct any errors and extract the original message as the last `$$r$$` coefficients of the corrected polynomial, i.e., `$$(d_s, d_{s+1}, \dots, d_{r+s-1})$$` 【1550】.
+
+### Double Error-Correcting BCH Codes – Example
+(Note: The source provides examples but no working solutions.)
+- Let `$$\alpha$$` be a root of `$$x^4 + x + 1$$`. A double error-correcting BCH code is constructed over `$$F = \mathbb{Z}_2[x]/\langle x^4 + x + 1 \rangle$$` using `$$\alpha$$`. How would the message `$$(1, 0, 1, 0, 1, 0, 1)$$` be encoded? 【1553】【1557】.
+- Using the previous example’s BCH code and assuming at most two errors, decode the received message `$$(1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)$$` 【1561】【1565】【1569】.
+- Using the previous example’s BCH code and assuming at most two errors, decode the received message `$$(1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0)$$` 【1573】【1577】.
+
+## Multiple Error-Correcting BCH Codes
+- This section is considered extension material and is not examinable 【1585】【1588】【1592】【1597】.
+- The construction of BCH codes can be extended for multiple error correction by incorporating more minimal polynomials for powers of a primitive element whose exponents’ cyclotomic cosets are disjoint 【1594】【1599】.
+- This section focuses on the binary case (`$$p=2$$`). Encoding is as expected, but decoding is more complicated 【1600】.
+
+### Standard Binary BCH Codes
+- **Definition**: The **standard binary BCH `$(2^k - 1, r)$` code** encodes binary messages of length `$$r$$` information digits to include `$$s$$` check digits, where `$$s$$` is the degree of the modulus polynomial and `$$r + s = 2^k - 1$$` 【1603】【1608】.
+- For a chosen primitive element `$$\alpha$$`, the modulus polynomial is defined as:
+    `$$M(x) = \text{lcm}(m_\alpha(x), m_{\alpha^2}(x), m_{\alpha^3}(x), \dots, m_{\alpha^{2t}}(x))$$`
+    where `$$t$$` is any positive integer such that `$$2t < 2^k$$` 【1604】【1605】【1609】【1610】.
+- **Fact**: The standard binary BCH `$(2^k - 1, r)$` code can correct up to `$$t$$` errors 【1611】.
+
+### Standard Binary BCH Codes – Example
+(Note: The source provides an example but no working solution.)
+- Describe the modulus polynomial required to correct up to `$$7$$` errors using standard binary BCH codes based on the finite field `$$F = \mathbb{F}_{32} = \mathbb{Z}_2[x]/\langle x^5 + x^2 + 1 \rangle$$` 【1614】【1618】.
+
+### Multiple Error-Correcting BCH Codes – Encoding
+- **Set-up (for binary multiple error-correcting BCH `$(2^k - 1, r)$` code)**:
+    1.  Choose an irreducible polynomial `$$f(x)$$` of degree `$$k$$` in `$$\mathbb{Z}_2[x]$$`, and set `$$F = \mathbb{Z}_2[x]/\langle f(x) \rangle$$` 【1631】【1636】【1642】【1649】【1657】【1667】.
+    2.  Find a primitive element `$$\alpha$$` in `$$F$$` and the minimal polynomials `$$m_{\alpha^t}(x)$$` for each power of `$$\alpha$$` 【1637】【1643】【1650】【1658】【1668】.
+- **Encoding (given binary message `$$(a_0, a_1, \dots, a_{r-1})$$)**:
+    1.  Set the modulus polynomial `$$M(x) = \text{lcm}(m_\alpha(x), m_{\alpha^2}(x), \dots, m_{\alpha^{2t}}(x))$$`, where `$$t$$` is the greatest integer such that `$$2t < 2^k$$`. Set `$$s = \deg(M(x))$$` 【1652】【1660】【1670】【1683】.
+    2.  Write the information polynomial `$$I(x) = x^s \sum_{i=0}^{r-1} a_i x^i$$` 【1661】【1662】【1671】【1684】【1685】.
+    3.  Find the check polynomial `$$R(x) = I(x) \pmod{M(x)} = \sum_{i=0}^{s-1} c_i x^i$$` 【1673】【1674】【1675】【1686】【1687】【1688】.
+    4.  Write the codeword polynomial `$$C(x) = R(x) + I(x)$$`, and transmit the coefficients of `$$C(x)$$`, i.e., the vector `$$(c_0, c_1, \dots, c_{s-1}, a_0, a_1, \dots, a_{r-1})$$` 【1689】.
+
+### Multiple Error-Correcting BCH Codes – Decoding
+- **Decoding (given received binary message `$$(d_0, d_1, \dots, d_{r+s-1})$$)**:
+    1.  Write the received polynomial `$$D(x) = \sum_{i=0}^{r+s-1} d_i x^i$$` 【1696】【1697】【1698】【1702】【1703】【1704】【1730】【1731】【1732】.
+    2.  Evaluate all entries in the matrix `$$S$$` using a power table:
+        `$$S = \begin{pmatrix} D(\alpha) & D(\alpha^2) & D(\alpha^3) & \dots & D(\alpha^t) \\ D(\alpha^2) & D(\alpha^3) & D(\alpha^4) & \dots & D(\alpha^{t+1}) \\ D(\alpha^3) & D(\alpha^4) & D(\alpha^5) & \dots & D(\alpha^{t+2}) \\ \vdots & \vdots & \vdots & \ddots & \vdots \\ D(\alpha^t) & D(\alpha^{t+1}) & D(\alpha^{t+2}) & \dots & D(\alpha^{2t-1}) \end{pmatrix}$$` 【1705】【1706】【1707】【1708】【1709】【1710】【1711】【1718】【1719】【1720】【1721】【1722】【1723】【1724】【1733】【1734】【1735】【1736】【1737】【1738】【1739】.
+    3.  The number of errors in the received message is the rank of `$$S$$`. Writing `$$n = \text{rank}(S)$$`, the errors are at the coefficients of `$$x^{i_1}, x^{i_2}, \dots, x^{i_n}$$` given `$$\alpha^{i_1}, \alpha^{i_2}, \dots, \alpha^{i_n}$$` are the roots of the polynomial `$$\sum_{i=0}^n \sigma_i x^i$$`, where `$$\sigma_n = 1$$` and the other coefficients `$$\sigma_i$$` solve the vector equation `$$S(\sigma_0, \sigma_1, \dots, \sigma_{n-1})^T = (D(\alpha^{n+1}), D(\alpha^{n+2}), \dots, D(\alpha^{2n}))^T$$` 【1725】【1726】【1740】【1741】.
+    4.  Correct any errors and extract the original message as the last `$$r$$` coefficients of the corrected polynomial, i.e., `$$(d_s, d_{s+1}, \dots, d_{r+s-1})$$` 【1742】.
+
+### Triple Error-Correcting BCH Codes – Example
+(Note: The source provides an example but no working solution.)
+- Let `$$\alpha$$` be a root of `$$x^4 + x + 1$$`. A triple error-correcting BCH code is constructed over `$$F = \mathbb{Z}_2[x]/\langle x^4 + x + 1 \rangle$$` using `$$\alpha$$`. What is the encoding modulus polynomial, and how many information digits will an encoded message contain? 【1745】【1749】【1753】.
