@@ -66,11 +66,20 @@ async function run() {
   assert.equal(displayMath.isValid, true, 'Expected display math to be valid');
   console.log('✓ Test 5 passed: Display math correctly accepted');
   
-  // Test 6: Single dollar signs should be rejected
-  const singleDollar = validateLatex('Invalid single dollars: $x = 1$');
-  assert.equal(singleDollar.isValid, false, 'Expected single dollars to be invalid');
-  assert.ok(singleDollar.errors.some(e => e.type === 'invalid_syntax'), 'Expected invalid_syntax error');
-  console.log('✓ Test 6 passed: Single dollar delimiters correctly rejected');
+  // Test 6: Single dollar signs should be allowed (for currency)
+  const singleDollar = validateLatex('The price is $5 and tax is $2');
+  assert.equal(singleDollar.isValid, true, 'Expected single dollars to be valid (treated as plain text)');
+  console.log('✓ Test 6 passed: Single dollar signs allowed for currency');
+  
+  // Test 6b: Currency mixed with LaTeX should work
+  const currencyWithLatex = validateLatex('The cost is $10 and the formula is \\(x = 5\\)');
+  assert.equal(currencyWithLatex.isValid, true, 'Expected currency mixed with LaTeX to be valid');
+  console.log('✓ Test 6b passed: Currency mixed with LaTeX works correctly');
+  
+  // Test 6c: Multiple dollar signs for currency
+  const multipleCurrency = validateLatex('Prices: $5, $10, $15, and $20 are all valid');
+  assert.equal(multipleCurrency.isValid, true, 'Expected multiple dollar signs to be valid');
+  console.log('✓ Test 6c passed: Multiple currency dollar signs work correctly');
  
   // Test 7: Large text validation from file
   const largeText = readFileSync('./test/large-text.txt', 'utf8');

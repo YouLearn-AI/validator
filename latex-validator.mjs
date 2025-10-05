@@ -2,7 +2,6 @@ import katex from "katex";
 
 // Types (copied from local types to be self-contained)
 export const defaultDelimiters = [
-  { left: "$", right: "$", display: false },
   { left: "\\(", right: "\\)", display: false },
   { left: "\\[", right: "\\]", display: true },
   { left: "\\begin{equation}", right: "\\end{equation}", display: false },
@@ -249,19 +248,6 @@ export function validateLatex(
     position = endPos + delimiter.right.length;
   }
 
-  // Check for common mistakes
-  const singleDollarRegex = /(?<![\\$])\$(?!\$)([^$]+)\$(?!\$)/g;
-  let match;
-  while ((match = singleDollarRegex.exec(originalText)) !== null) {
-    errors.push({
-      message: `Single $ delimiters are not supported. Use $$ or \\( \\) instead`,
-      position: match.index,
-      length: match[0].length,
-      latex: match[0],
-      type: "invalid_syntax",
-    });
-  }
-
   return {
     isValid: errors.length === 0,
     errors,
@@ -311,19 +297,6 @@ export function validateLatexUsingSplitter(
       // Update position (approximate - not perfect but good enough for most cases)
       const chunkLength = chunk.rawData?.length || chunk.data.length;
       currentPosition += chunkLength;
-    }
-    
-    // Check for single dollar signs
-    const singleDollarRegex = /(?<![\\$])\$(?!\$)([^$]+)\$(?!\$)/g;
-    let match;
-    while ((match = singleDollarRegex.exec(text)) !== null) {
-      errors.push({
-        message: `Single $ delimiters are not supported. Use $$ or \\( \\) instead`,
-        position: match.index,
-        length: match[0].length,
-        latex: match[0],
-        type: "invalid_syntax",
-      });
     }
     
   } catch (parseError) {
