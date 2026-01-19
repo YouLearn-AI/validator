@@ -1,10 +1,12 @@
 import express from 'express';
 import { validateDiagramSyntax } from './validator.mjs';
 import { validateLatex } from './latex-validator.mjs';
+import { renderScreenshot, closeBrowser } from './screenshot-renderer.mjs';
 
 const app = express();
 const port = process.env.PORT || 3002;
 
+// Default limit for most endpoints
 app.use(express.json({ limit: '256kb' }));
 
 // Health check
@@ -38,16 +40,48 @@ app.post('/validate/latex', (req, res) => {
     if (result.isValid) {
       return res.json({ valid: true });
     } else {
-      return res.status(400).json({ 
-        valid: false, 
+      return res.status(400).json({
+        valid: false,
         errors: result.errors,
         error: `Found ${result.errors.length} LaTeX error(s)`
       });
     }
   } catch (error) {
-    return res.status(500).json({ 
-      valid: false, 
-      error: `Validation failed: ${error.message}` 
+    return res.status(500).json({
+      valid: false,
+      error: `Validation failed: ${error.message}`
+    });
+  }
+});
+
+// Render HTML and capture screenshot
+// Uses larger body limit since HTML content can be substantial
+app.post('/render-screenshot', express.json({ limit: '2mb' }), async (req, res) => {
+  const { html, width, height } = req.body;
+
+  if (typeof html !== 'string' || html.trim().length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'Body must include a non-empty "html" string'
+    });
+  }
+
+  // Validate dimensions if provided
+  const viewportWidth = typeof width === 'number' && width > 0 && width <= 3840 ? width : 1280;
+  const viewportHeight = typeof height === 'number' && height > 0 && height <= 2160 ? height : 720;
+
+  try {
+    const screenshot = await renderScreenshot(html, viewportWidth, viewportHeight);
+    return res.json({
+      success: true,
+      screenshot
+    });
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('Screenshot rendering failed:', error);
+    return res.status(500).json({
+      success: false,
+      error: `Screenshot rendering failed: ${error.message}`
     });
   }
 });
@@ -57,9 +91,24 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Not Found' });
 });
 
-app.listen(port, () => {
+const server = app.listen(port, () => {
   // eslint-disable-next-line no-console
-  console.log(`Mermaid validator listening on http://localhost:${port}`);
+  console.log(`Validator service listening on http://localhost:${port}`);
 });
+
+// Graceful shutdown
+const shutdown = async () => {
+  // eslint-disable-next-line no-console
+  console.log('Shutting down gracefully...');
+  await closeBrowser();
+  server.close(() => {
+    // eslint-disable-next-line no-console
+    console.log('Server closed');
+    process.exit(0);
+  });
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
 
 
