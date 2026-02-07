@@ -43,15 +43,18 @@ async function getBrowser() {
  * @param {Object} options - Render options
  * @param {string} [options.url] - URL to capture
  * @param {string} [options.html] - HTML content to render
- * @param {number} width - Viewport width (default: 1280)
- * @param {number} height - Viewport height (default: 720)
- * @returns {Promise<string>} Base64-encoded PNG screenshot
+ * @param {number} [options.width=1280] - Viewport width
+ * @param {number} [options.height=720] - Viewport height
+ * @param {'png'|'jpeg'} [options.format='jpeg'] - Image format
+ * @param {number} [options.quality=80] - JPEG quality (1-100, ignored for PNG)
+ * @param {number} [options.scale=1] - Device scale factor (1 = 1x, 2 = Retina)
+ * @returns {Promise<string>} Base64-encoded screenshot
  */
-export async function renderScreenshot({ url, html, width = 1280, height = 720 }) {
+export async function renderScreenshot({ url, html, width = 1280, height = 720, format = 'jpeg', quality = 80, scale = 1 }) {
   const browserInstance = await getBrowser();
   const context = await browserInstance.newContext({
     viewport: { width, height },
-    deviceScaleFactor: 2, // Retina quality
+    deviceScaleFactor: scale,
   });
 
   const page = await context.newPage();
@@ -73,10 +76,11 @@ export async function renderScreenshot({ url, html, width = 1280, height = 720 }
     await page.waitForTimeout(500);
 
     // Capture screenshot
-    const screenshot = await page.screenshot({
-      type: 'png',
-      fullPage: false,
-    });
+    const screenshotOpts = { type: format, fullPage: false };
+    if (format === 'jpeg') {
+      screenshotOpts.quality = quality;
+    }
+    const screenshot = await page.screenshot(screenshotOpts);
 
     // Convert to base64
     return screenshot.toString('base64');

@@ -57,7 +57,7 @@ app.post('/validate/latex', (req, res) => {
 // Render URL/HTML and capture screenshot
 // Uses larger body limit since content can be substantial
 app.post('/render-screenshot', express.json({ limit: '2mb' }), async (req, res) => {
-  const { html, url, width, height } = req.body;
+  const { html, url, width, height, format, quality, scale } = req.body;
 
   const hasHtml = typeof html === 'string' && html.trim().length > 0;
   const hasUrl = typeof url === 'string' && url.trim().length > 0;
@@ -69,16 +69,24 @@ app.post('/render-screenshot', express.json({ limit: '2mb' }), async (req, res) 
     });
   }
 
-  // Validate dimensions if provided
+  // Validate dimensions
   const viewportWidth = typeof width === 'number' && width > 0 && width <= 3840 ? width : 1280;
   const viewportHeight = typeof height === 'number' && height > 0 && height <= 2160 ? height : 720;
+
+  // Validate format & quality
+  const imgFormat = format === 'png' ? 'png' : 'jpeg';
+  const imgQuality = typeof quality === 'number' && quality >= 1 && quality <= 100 ? quality : 80;
+  const deviceScale = typeof scale === 'number' && scale >= 1 && scale <= 3 ? scale : 1;
 
   try {
     const screenshot = await renderScreenshot({
       url: hasUrl ? url : undefined,
       html: hasHtml ? html : undefined,
       width: viewportWidth,
-      height: viewportHeight
+      height: viewportHeight,
+      format: imgFormat,
+      quality: imgQuality,
+      scale: deviceScale,
     });
     return res.json({
       success: true,
