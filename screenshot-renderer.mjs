@@ -22,13 +22,15 @@ async function getBrowser() {
 }
 
 /**
- * Render HTML content and capture a screenshot
- * @param {string} html - The HTML content to render
+ * Render a URL or HTML content and capture a screenshot
+ * @param {Object} options - Render options
+ * @param {string} [options.url] - URL to capture
+ * @param {string} [options.html] - HTML content to render
  * @param {number} width - Viewport width (default: 1280)
  * @param {number} height - Viewport height (default: 720)
  * @returns {Promise<string>} Base64-encoded PNG screenshot
  */
-export async function renderScreenshot(html, width = 1280, height = 720) {
+export async function renderScreenshot({ url, html, width = 1280, height = 720 }) {
   const browserInstance = await getBrowser();
   const context = await browserInstance.newContext({
     viewport: { width, height },
@@ -38,11 +40,17 @@ export async function renderScreenshot(html, width = 1280, height = 720) {
   const page = await context.newPage();
 
   try {
-    // Set the HTML content
-    await page.setContent(html, {
-      waitUntil: 'networkidle',
-      timeout: 30000,
-    });
+    if (typeof url === 'string' && url.trim().length > 0) {
+      await page.goto(url, {
+        waitUntil: 'networkidle',
+        timeout: 30000,
+      });
+    } else {
+      await page.setContent(html, {
+        waitUntil: 'networkidle',
+        timeout: 30000,
+      });
+    }
 
     // Wait a bit for any JavaScript animations/rendering
     await page.waitForTimeout(500);

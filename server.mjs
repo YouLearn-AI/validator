@@ -54,15 +54,18 @@ app.post('/validate/latex', (req, res) => {
   }
 });
 
-// Render HTML and capture screenshot
-// Uses larger body limit since HTML content can be substantial
+// Render URL/HTML and capture screenshot
+// Uses larger body limit since content can be substantial
 app.post('/render-screenshot', express.json({ limit: '2mb' }), async (req, res) => {
-  const { html, width, height } = req.body;
+  const { html, url, width, height } = req.body;
 
-  if (typeof html !== 'string' || html.trim().length === 0) {
+  const hasHtml = typeof html === 'string' && html.trim().length > 0;
+  const hasUrl = typeof url === 'string' && url.trim().length > 0;
+
+  if (!hasHtml && !hasUrl) {
     return res.status(400).json({
       success: false,
-      error: 'Body must include a non-empty "html" string'
+      error: 'Body must include a non-empty "html" or "url" string'
     });
   }
 
@@ -71,7 +74,12 @@ app.post('/render-screenshot', express.json({ limit: '2mb' }), async (req, res) 
   const viewportHeight = typeof height === 'number' && height > 0 && height <= 2160 ? height : 720;
 
   try {
-    const screenshot = await renderScreenshot(html, viewportWidth, viewportHeight);
+    const screenshot = await renderScreenshot({
+      url: hasUrl ? url : undefined,
+      html: hasHtml ? html : undefined,
+      width: viewportWidth,
+      height: viewportHeight
+    });
     return res.json({
       success: true,
       screenshot
@@ -110,5 +118,3 @@ const shutdown = async () => {
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
-
-
