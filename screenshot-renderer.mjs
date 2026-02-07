@@ -1,23 +1,40 @@
 import { chromium } from 'playwright';
 
 let browser = null;
+let launching = null; // serializes concurrent launch attempts
 
 /**
- * Get or create a singleton browser instance
+ * Get or create a singleton browser instance.
+ * Uses a launch promise to prevent concurrent requests from spawning
+ * duplicate browser processes.
  * @returns {Promise<import('playwright').Browser>}
  */
 async function getBrowser() {
-  if (!browser || !browser.isConnected()) {
-    browser = await chromium.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-      ],
-    });
+  if (browser && browser.isConnected()) {
+    return browser;
   }
+
+  // If another request is already launching, wait for it
+  if (launching) {
+    return launching;
+  }
+
+  launching = chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+    ],
+  });
+
+  try {
+    browser = await launching;
+  } finally {
+    launching = null;
+  }
+
   return browser;
 }
 
