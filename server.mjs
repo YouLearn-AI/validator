@@ -7,7 +7,10 @@ const app = express();
 const port = process.env.PORT || 3002;
 
 // Default limit for most endpoints
-app.use(express.json({ limit: '256kb' }));
+// inflate: false refuses compressed request bodies (415) instead of decompressing them:
+// Node's Brotli decoder has a remote-code-execution bug (CVE-2026-111497, fixed in
+// 24.22.1), and no client needs to send compressed JSON here (ops I-543).
+app.use(express.json({ limit: '256kb', inflate: false }));
 
 // Health check
 app.get('/health', (_req, res) => {
@@ -56,7 +59,7 @@ app.post('/validate/latex', (req, res) => {
 
 // Render URL/HTML and capture screenshot
 // Uses larger body limit since content can be substantial
-app.post('/render-screenshot', express.json({ limit: '2mb' }), async (req, res) => {
+app.post('/render-screenshot', express.json({ limit: '2mb', inflate: false }), async (req, res) => {
   const { html, url, width, height, format, quality, scale } = req.body;
 
   const hasHtml = typeof html === 'string' && html.trim().length > 0;
