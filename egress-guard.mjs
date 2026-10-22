@@ -87,6 +87,11 @@ export function addressRefusal(address) {
     return 'malformed';
   }
   if (ip.kind() === 'ipv6' && ip.isIPv4MappedAddress()) ip = ip.toIPv4Address();
+  // IPv4-compatible ::a.b.c.d (deprecated, RFC 4291), which ipaddr.js calls
+  // unicast in its hex form (::a9fe:a9fe); :: and ::1 are judged below.
+  if (ip.kind() === 'ipv6' && ip.parts.slice(0, 6).every((p) => p === 0) && (ip.parts[6] !== 0 || ip.parts[7] > 1)) {
+    return 'embedded_ipv4';
+  }
   if (METADATA_ADDRESSES.has(ip.toNormalizedString()) || METADATA_ADDRESSES.has(ip.toString())) return 'metadata';
   const range = ip.range();
   if (range === 'unicast') return null;

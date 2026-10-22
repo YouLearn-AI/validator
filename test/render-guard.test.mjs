@@ -86,6 +86,11 @@ const REFUSED = {
   '64:ff9b::7f00:1': 'nat64',
   '2002:7f00:1::1': 'embedded_ipv4',
   '2001::1': 'embedded_ipv4',
+  '::a9fe:a9fe': 'embedded_ipv4',
+  '::7f00:1': 'embedded_ipv4',
+  '::a00:1': 'embedded_ipv4',
+  'fec0::1': 'not_global',
+  'fd20:ce::254': 'private',
 };
 
 describe('address check', () => {
