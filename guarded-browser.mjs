@@ -84,6 +84,13 @@ export class GuardedBrowser {
     });
   }
 
+  /** Ends the browser (its processes too); the next render launches a new one. The proxy stays. */
+  async reset() {
+    const browser = this.browserInstance;
+    this.browserInstance = null;
+    if (browser) await browser.close().catch(() => {});
+  }
+
   async close() {
     if (this.browserInstance && this.browserInstance.isConnected()) await this.browserInstance.close();
     this.browserInstance = null;

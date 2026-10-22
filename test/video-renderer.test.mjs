@@ -46,6 +46,22 @@ const PAGES = {
     <script>document.getElementById('r').oninput = (e) => { document.getElementById('bar').style.width = (e.target.value * 10) + 'px'; };</script></body>`,
   // Hangs its renderer when its button is pressed.
   '/hang': `<!doctype html><body><button onclick="for(;;){}" style="font-size:30px">Start</button></body>`,
+  // The whole frame turns from white to black: the loop's end must be all white again.
+  '/flip': `<!doctype html><body style="margin:0;background:#fff;height:630px;transition:background 1s linear">
+    <button onclick="document.body.style.background='#000'" style="position:absolute;left:5px;top:5px">Start</button></body>`,
+  // Moves from the moment it loads, driven by requestAnimationFrame and Date.
+  '/auto': `<!doctype html><body style="margin:0"><canvas id="c" width="1200" height="630"></canvas><script>
+      const c = document.getElementById('c').getContext('2d'); const t0 = performance.now();
+      function tick(t) { c.fillStyle = '#fff'; c.fillRect(0, 0, 1200, 630); c.fillStyle = '#093';
+        c.fillRect(((t - t0) / 3) % 1080, 250, 120, 120); requestAnimationFrame(tick); }
+      requestAnimationFrame(tick);</script></body>`,
+  // Every frame new noise: the worst case for the clip's size.
+  '/noise': `<!doctype html><body style="margin:0"><canvas id="c" width="1200" height="630"></canvas><script>
+      const c = document.getElementById('c').getContext('2d'); const img = c.createImageData(1200, 630);
+      function tick() { for (let i = 0; i < img.data.length; i += 4) { const v = Math.random() * 255;
+        img.data[i] = v; img.data[i + 1] = Math.random() * 255; img.data[i + 2] = v; img.data[i + 3] = 255; }
+        c.putImageData(img, 0, 0); requestAnimationFrame(tick); }
+      requestAnimationFrame(tick);</script></body>`,
 };
 
 function listen(server) {
@@ -132,8 +148,8 @@ describe('video renderer', { timeout: 300_000 }, () => {
     assert.equal(v.pix_fmt, 'yuv420p');
     assert.equal(`${v.width}x${v.height}`, '1200x630');
     assert.equal(v.r_frame_rate, '30/1');
-    assert.equal(Number(v.nb_read_frames), 119);
-    assert.ok(Math.abs(Number(info.format.duration) - 119 / 30) < 0.05, info.format.duration);
+    assert.equal(Number(v.nb_read_frames), 120);
+    assert.ok(Math.abs(Number(info.format.duration) - 4) < 0.05, info.format.duration);
     // faststart: the index comes before the media data.
     assert.ok(result.video.indexOf('moov') < result.video.indexOf('mdat'), 'moov after mdat');
     assert.deepEqual(jpegSize(result.frame), { width: 1200, height: 630 });
@@ -145,7 +161,7 @@ describe('video renderer', { timeout: 300_000 }, () => {
     const frame = (n, out) => execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', file,
       '-vf', `select=eq(n\\,${n})`, '-fps_mode', 'passthrough', '-frames:v', '1', out]);
     frame(0, path.join(tmpDir, 'first.png'));
-    frame(118, path.join(tmpDir, 'last.png'));
+    frame(119, path.join(tmpDir, 'last.png'));
     frame(60, path.join(tmpDir, 'middle.png'));
     // ffmpeg prints SSIM on stderr.
     const score = (a, b) => {
@@ -154,6 +170,58 @@ describe('video renderer', { timeout: 300_000 }, () => {
     };
     assert.ok(score('first.png', 'last.png') > 0.99, `last vs first ${score('first.png', 'last.png')}`);
     assert.ok(score('first.png', 'middle.png') < 0.99, 'the middle should differ from the first frame');
+  });
+
+  test('the loop ends on frame 0 exactly, even when the whole frame changed', async () => {
+    const result = await renderer()({ url: url('/flip') });
+    assert.ok(result.video, JSON.stringify(result.meta));
+    const file = path.join(tmpDir, 'flip.mp4');
+    fs.writeFileSync(file, result.video);
+    const luma = spawnSync('ffmpeg', ['-hide_banner', '-i', file, '-vf', 'signalstats,metadata=mode=print:key=lavfi.signalstats.YAVG:file=-', '-f', 'null', '-'], { encoding: 'utf8' });
+    const yavg = [...luma.stdout.matchAll(/YAVG=([0-9.]+)/g)].map((m) => Number(m[1]));
+    assert.equal(yavg.length, 120);
+    assert.ok(yavg[90] < 30, `the end of the transition is black: ${yavg[90]}`);
+    assert.ok(Math.abs(yavg[119] - yavg[0]) < 1, `first ${yavg[0]} last ${yavg[119]}`);
+  });
+
+  test('a page that animates from load starts at the same page time every render', async () => {
+    const a = await renderer()({ url: url('/auto') });
+    const b = await renderer()({ url: url('/auto') });
+    assert.ok(a.video && b.video);
+    // The same page time to within a millisecond (the clock's own start): the square is at the same place,
+    // give or take a fraction of a pixel. Without the clock paused before load it moved on while the page
+    // loaded, a different distance every time.
+    fs.writeFileSync(path.join(tmpDir, 'auto-a.jpg'), a.frame);
+    fs.writeFileSync(path.join(tmpDir, 'auto-b.jpg'), b.frame);
+    const psnr = spawnSync('ffmpeg', ['-hide_banner', '-i', path.join(tmpDir, 'auto-a.jpg'), '-i', path.join(tmpDir, 'auto-b.jpg'),
+      '-lavfi', 'psnr', '-f', 'null', '-'], { encoding: 'utf8' }).stderr;
+    const db = /average:(inf|[0-9.]+)/.exec(psnr)[1];
+    assert.ok(db === 'inf' || Number(db) > 40, `frame 0 PSNR ${db} dB`);
+  });
+
+  test('a clip of pure noise stays far under iMessage\'s 10 MB', async () => {
+    const result = await renderer()({ url: url('/noise') });
+    assert.ok(result.video, JSON.stringify(result.meta));
+    assert.ok(result.video.length < 3_000_000, `${result.video.length} bytes`);
+  });
+
+  test('a clip over the size limit is dropped', async () => {
+    const result = await renderer({ maxBytes: 1000 })({ url: url('/moving') });
+    assert.equal(result.video, null);
+    assert.equal(result.reason, 'too_large');
+  });
+
+  test('the deadline covers a lookup that never answers', async () => {
+    const stuck = createVideoRenderer(browser, {
+      checkOptions: { lookup: (host) => (host === 'stuck.test' ? new Promise(() => {}) : lookup(host)) },
+      options: { deadlineMs: 2000, teardownMs: 1000 },
+      log: silent,
+    });
+    const t0 = Date.now();
+    await assert.rejects(stuck({ url: 'http://stuck.test/' }), RenderTimeout);
+    assert.ok(Date.now() - t0 < 6000, `took ${Date.now() - t0} ms`);
+    // Not RenderBusy: the slot was released.
+    await assert.rejects(stuck({ url: 'http://stuck.test/' }), RenderTimeout);
   });
 
   test('a page where nothing moves gives no video, only the frame', async () => {

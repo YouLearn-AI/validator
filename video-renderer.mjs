@@ -37,9 +37,15 @@ export const VIDEO_DEFAULTS = Object.freeze({
   // stays far under it; a moving shape does not. A clip needs MIN_MOVING_FRAMES frames over the threshold.
   motionThreshold: 0.3,
   minMovingFrames: 3,
+  maxrate: '4M',
+  bufsize: '8M',
+  maxBytes: 9_000_000, // iMessage downloads a clip only under 10 MB in all (TN3156)
   gotoTimeoutMs: 30_000,
   deadlineMs: 100_000,
+  teardownMs: 10_000, // per cleanup step, and for the render to stop after the deadline
 });
+
+const FFMPEG_KILL_GRACE_MS = 2_000;
 
 const PREFER = /\b(play|start|run|launch|fire|step|next|search|go|check|begin|animate|simulate|throw|shoot|explore|try|balance|compare)\b/i;
 
@@ -102,17 +108,27 @@ function pickControl(preferSource) {
   return { kind, label: label(el), x: r.left + r.width / 2, y: r.top + r.height / 2 };
 }
 
+// Runs a command and settles only once it has exited. On abort it gets SIGTERM, then SIGKILL after a grace.
 function run(command, args, { signal } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], signal });
+    const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
+    let killTimer;
+    const stop = () => {
+      child.kill('SIGTERM');
+      killTimer = setTimeout(() => child.kill('SIGKILL'), FFMPEG_KILL_GRACE_MS);
+    };
+    if (signal?.aborted) stop();
+    else signal?.addEventListener('abort', stop, { once: true });
     child.stdout.on('data', (d) => { stdout += d; });
     child.stderr.on('data', (d) => { stderr += d; });
-    child.on('error', reject);
-    child.on('close', (code) => {
+    child.on('error', () => {}); // a failed spawn is followed by 'close'
+    child.on('close', (code, sig) => {
+      clearTimeout(killTimer);
+      signal?.removeEventListener('abort', stop);
       if (code === 0) resolve(stdout);
-      else reject(new Error(`${path.basename(command)} exited ${code}: ${stderr.slice(-400)}`));
+      else reject(new Error(`${path.basename(command)} ended (${code ?? sig}): ${stderr.slice(-400)}`));
     });
   });
 }
@@ -127,12 +143,15 @@ async function motionOf(ffmpeg, dir, fps, signal) {
 }
 
 async function encodeLoop(ffmpeg, dir, frames, o, signal) {
-  // The fade ends on the last frame, which is then frame 0 itself: the loop wraps from frame 0 to frame 0.
+  // The fade ends exactly on the last frame, which is then frame 0 itself, so the loop wraps from frame 0 to
+  // frame 0 (a 1/30 s hold) with nothing of the end left in it. The fading-in input needs one frame past the
+  // fade for xfade to reach it.
   const offset = ((frames - 1) / o.fps - o.fadeSeconds).toFixed(4);
+  const tail = (o.fadeSeconds + 1 / o.fps).toFixed(4);
   const out = path.join(dir, 'clip.mp4');
   const graph = [
     `[0:v]settb=1/${o.fps},format=yuv444p[a]`,
-    `[1:v]settb=1/${o.fps},format=yuv444p,trim=duration=${o.fadeSeconds}[b]`,
+    `[1:v]settb=1/${o.fps},format=yuv444p,trim=duration=${tail}[b]`,
     `[a][b]xfade=transition=fade:duration=${o.fadeSeconds}:offset=${offset},format=yuv420p[v]`,
   ].join(';');
   await run(ffmpeg, [
@@ -141,9 +160,22 @@ async function encodeLoop(ffmpeg, dir, frames, o, signal) {
     '-loop', '1', '-framerate', String(o.fps), '-i', path.join(dir, 'f0000.png'),
     '-filter_complex', graph, '-map', '[v]', '-frames:v', String(frames),
     '-c:v', 'libx264', '-profile:v', 'high', '-preset', o.preset, '-crf', String(o.crf), '-tune', 'animation',
+    // A ceiling for pages full of noise: 4 s at 4 Mbit/s is about 2 MB, under iMessage's 10 MB.
+    '-maxrate', o.maxrate, '-bufsize', o.bufsize,
     '-r', String(o.fps), '-movflags', '+faststart', '-an', out,
   ], { signal });
   return fs.readFile(out);
+}
+
+class StepTimeout extends Error {}
+
+// `promise`, or a StepTimeout after `ms`.
+function within(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new StepTimeout(`step over ${ms} ms`)), ms); }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -155,24 +187,60 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
   const o = { ...VIDEO_DEFAULTS, ...options };
   let busy = false;
 
-  async function film(url, signal, cleanup) {
+  // What one render holds, released once, last first, each step within o.teardownMs. A resource acquired
+  // after the render was stopped is released at once.
+  function createScope(signal) {
+    const disposers = [];
+    let closed = false;
+    return {
+      async own(resource, dispose) {
+        if (closed || signal.aborted) {
+          await within(dispose(resource), o.teardownMs).catch(() => {});
+          throw new RenderTimeout(o.deadlineMs);
+        }
+        disposers.push(() => dispose(resource));
+        return resource;
+      },
+      check() {
+        if (signal.aborted) throw new RenderTimeout(o.deadlineMs);
+      },
+      async close() {
+        closed = true;
+        let stalled = false;
+        while (disposers.length) {
+          const dispose = disposers.pop();
+          const ok = await within(Promise.resolve().then(dispose), o.teardownMs).then(() => true, (e) => !(e instanceof StepTimeout));
+          if (!ok) stalled = true;
+        }
+        return !stalled;
+      },
+    };
+  }
+
+  async function film(url, signal, scope) {
     const t0 = Date.now();
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'i609-'));
-    cleanup.push(() => fs.rm(dir, { recursive: true, force: true }));
-    const context = await guardedBrowser.newContext({ viewport: { width: o.width, height: o.height }, deviceScaleFactor: 1 });
-    cleanup.push(() => context.close().catch(() => {}));
+    await checkUrl(url, { log, ...checkOptions });
+    scope.check();
+    const dir = await scope.own(await fs.mkdtemp(path.join(os.tmpdir(), 'i609-')), (d) => fs.rm(d, { recursive: true, force: true }));
+    const context = await scope.own(
+      await guardedBrowser.newContext({ viewport: { width: o.width, height: o.height }, deviceScaleFactor: 1 }),
+      (c) => c.close(),
+    );
     const page = await context.newPage();
     // CSS animations and transitions don't follow the fake clock. Their timeline is held still from the first
     // document on (playback rate 0); stepAnimations moves them on with the page's clock.
     const cdp = await context.newCDPSession(page);
     await cdp.send('Animation.enable');
     await cdp.send('Animation.setPlaybackRate', { playbackRate: 0 });
-    await page.clock.install({ time: new Date() });
+    // The page's clock is paused before its first script runs, so timers and requestAnimationFrame move only
+    // with runFor: however long the load takes, frame 0 is the same page time after it.
+    const epoch = o.epochMs ?? Math.floor(Date.now() / 1000) * 1000;
+    await page.clock.install({ time: epoch });
+    // A whole second ahead, so the paused time doesn't depend on how long install took.
+    await page.clock.pauseAt(epoch + 1000);
     await page.goto(url, { waitUntil: 'networkidle', timeout: o.gotoTimeoutMs });
     await page.evaluate(() => document.fonts && document.fonts.ready);
-    // From here only runFor moves the page's clock.
-    const now = await page.evaluate(() => Date.now());
-    await page.clock.pauseAt(now + 100);
+    scope.check();
     await page.evaluate(stepAnimations, 0);
     await page.clock.runFor(o.settleMs);
     await page.evaluate(stepAnimations, o.settleMs);
@@ -184,7 +252,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     let action = 'none';
     let target = null;
     for (let i = 0; i < total; i += 1) {
-      if (signal.aborted) throw new RenderTimeout(o.deadlineMs);
+      scope.check();
       if (i === before) {
         target = await page.evaluate(pickControl, PREFER.source);
         if (target) {
@@ -207,43 +275,39 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     const ydif = await motionOf(ffmpeg, dir, o.fps, signal);
     const movingFrames = ydif.filter((v) => v > o.motionThreshold).length;
     const motion = { maxYdif: Math.max(0, ...ydif), movingFrames, threshold: o.motionThreshold };
-    // The clip is one frame shorter than the capture: its last frame is the fade's end, frame 0.
-    const meta = { url_host: new URL(url).host, frames: total, fps: o.fps, seconds: (total - 1) / o.fps, action, motion, captureMs };
+    const meta = { url_host: new URL(url).host, frames: total, fps: o.fps, seconds: total / o.fps, action, motion, captureMs };
     if (movingFrames < o.minMovingFrames) {
       return { video: null, frame: frame0Jpeg, reason: 'no_motion', meta: { ...meta, totalMs: Date.now() - t0 } };
     }
+    scope.check();
     const tEncode = Date.now();
     const video = await encodeLoop(ffmpeg, dir, total, o, signal);
-    return {
-      video,
-      frame: frame0Jpeg,
-      reason: null,
-      meta: { ...meta, encodeMs: Date.now() - tEncode, totalMs: Date.now() - t0, bytes: video.length },
-    };
+    const done = { ...meta, encodeMs: Date.now() - tEncode, totalMs: Date.now() - t0, bytes: video.length };
+    if (video.length > o.maxBytes) return { video: null, frame: frame0Jpeg, reason: 'too_large', meta: done };
+    return { video, frame: frame0Jpeg, reason: null, meta: done };
   }
 
   /**
-   * Film `url`. Resolves { video: Buffer|null, frame: Buffer, reason, meta }; video is null when nothing moved.
+   * Film `url`. Resolves { video: Buffer|null, frame: Buffer, reason, meta }; video is null when nothing moved
+   * ("no_motion") or the clip came out too large ("too_large").
    * @throws {UrlRefused} the URL is not a public http(s) address
    * @throws {RenderBusy} another render is running here
-   * @throws {RenderTimeout} the render passed the deadline
+   * @throws {RenderTimeout} the render passed the deadline (the lookup and the cleanup count)
    */
   return async function renderVideo({ url }) {
     if (busy) throw new RenderBusy();
     busy = true;
     const controller = new AbortController();
-    const cleanup = [];
-    let timer;
+    const scope = createScope(controller.signal);
+    const stopped = new Promise((_, reject) => {
+      controller.signal.addEventListener('abort', () => reject(new RenderTimeout(o.deadlineMs)), { once: true });
+    });
+    stopped.catch(() => {});
+    const timer = setTimeout(() => controller.abort(), o.deadlineMs);
+    const filming = film(String(url || '').trim(), controller.signal, scope);
+    filming.catch(() => {});
     try {
-      const target = String(url || '').trim();
-      await checkUrl(target, { log, ...checkOptions });
-      const deadline = new Promise((_, reject) => {
-        timer = setTimeout(() => {
-          controller.abort();
-          reject(new RenderTimeout(o.deadlineMs));
-        }, o.deadlineMs);
-      });
-      const result = await Promise.race([film(target, controller.signal, cleanup), deadline]);
+      const result = await Promise.race([filming, stopped]);
       log.info(`[RENDER_VIDEO] host=${result.meta.url_host} video=${Boolean(result.video)} reason=${result.reason || '-'} `
         + `action=${JSON.stringify(result.meta.action)} max_ydif=${result.meta.motion.maxYdif.toFixed(2)} `
         + `moving=${result.meta.motion.movingFrames} ms=${result.meta.totalMs} bytes=${result.meta.bytes || 0}`);
@@ -251,7 +315,15 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     } finally {
       clearTimeout(timer);
       controller.abort();
-      for (const fn of cleanup.reverse()) await fn().catch(() => {});
+      // Release the context, ffmpeg and the frames, then wait for the render to stop. A browser that does not
+      // let go is ended, so the next render starts clean.
+      const released = await scope.close();
+      const ended = await within(filming.then(() => {}, () => {}), o.teardownMs).then(() => true, () => false);
+      if (!released || !ended) {
+        log.warn(`[RENDER_VIDEO] teardown stalled (released=${released} ended=${ended}); restarting the browser`);
+        await guardedBrowser.reset();
+        await within(filming.then(() => {}, () => {}), o.teardownMs).catch(() => {});
+      }
       busy = false;
     }
   };
