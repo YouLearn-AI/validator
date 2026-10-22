@@ -1,0 +1,25 @@
+# The interactive video renderer (ops I-609): this repo's code, its own private Cloud Run service.
+# Same base as the validator's Dockerfile plus Debian's ffmpeg, which has libx264 (Playwright's own ffmpeg
+# writes only VP9 WebM, which iMessage refuses).
+FROM node:24.22.1-slim
+
+WORKDIR /app
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ffmpeg \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+RUN npx playwright install --with-deps chromium
+
+COPY . .
+
+# Chromium's sandbox refuses root (guarded-browser.mjs); needs Cloud Run's second-generation environment.
+USER node
+
+EXPOSE 3002
+
+CMD ["node", "video-server.mjs"]

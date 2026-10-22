@@ -1,0 +1,9 @@
+# Builds the interactive video renderer image (Dockerfile.video), ops I-609. For a trigger or a manual
+# `gcloud builds submit --config cloudbuild.video.yaml --substitutions COMMIT_SHA=<sha>`; it does not deploy.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-f', 'Dockerfile.video', '-t', 'gcr.io/$PROJECT_ID/github.com/youlearn-ai/interactive-renderer:$COMMIT_SHA', '.']
+images:
+  - gcr.io/$PROJECT_ID/github.com/youlearn-ai/interactive-renderer:$COMMIT_SHA
+options:
+  logging: CLOUD_LOGGING_ONLY
