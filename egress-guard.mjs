@@ -160,15 +160,32 @@ export async function checkUrl(url, options = {}) {
   return parsed;
 }
 
-function defaultConnect({ host, port }) {
-  return net.connect({ host, port });
+function defaultConnect(options) {
+  return net.connect(options);
 }
 
-// Connect to the first checked address, then check the address the socket
-// reached before any byte is sent.
+// A lookup that answers only the addresses already checked, so the socket can
+// reach nothing else, whatever DNS says by the time it connects.
+function pinnedLookup(addresses) {
+  const records = addresses.map((address) => ({ address, family: net.isIPv6(address) ? 6 : 4 }));
+  return (_hostname, options, callback) => {
+    const cb = typeof options === 'function' ? options : callback;
+    if (options && options.all) cb(null, records);
+    else cb(null, records[0].address, records[0].family);
+  };
+}
+
+// Connect to one of the checked addresses (Node tries each in turn, both
+// families, as Chromium would), then check the address the socket reached
+// before any byte is sent.
 async function connectChecked(host, port, { lookup, connect, log }) {
-  const [address] = await publicAddresses(host, { lookup, log });
-  const socket = connect({ host: address, port });
+  const addresses = await publicAddresses(host, { lookup, log });
+  const socket = connect({
+    host: net.isIP(host) ? host : host.replace(/^\[|\]$/g, ''),
+    port,
+    lookup: pinnedLookup(addresses),
+    autoSelectFamily: true,
+  });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       socket.destroy();
@@ -224,7 +241,14 @@ export async function startEgressProxy({ lookup = defaultLookup, connect = defau
     return error;
   };
 
-  const server = http.createServer(async (req, res) => {
+  const server = http.createServer((req, res) => {
+    forwardHttp(req, res).catch(() => {
+      if (!res.headersSent) res.writeHead(502);
+      res.end();
+    });
+  });
+
+  async function forwardHttp(req, res) {
     let target;
     try {
       target = new URL(req.url);
@@ -261,7 +285,20 @@ export async function startEgressProxy({ lookup = defaultLookup, connect = defau
     upstream.on('response', (upRes) => {
       const out = { ...upRes.headers };
       for (const name of HOP_BY_HOP) delete out[name];
-      res.writeHead(upRes.statusCode || 502, out);
+      const status = upRes.statusCode;
+      try {
+        // writeHead throws on a status outside 100-999 or a header it won't
+        // write; an upstream server picks both, so neither may reach it unchecked.
+        if (!Number.isInteger(status) || status < 200 || status > 599) throw new Error(`bad upstream status ${status}`);
+        res.writeHead(status, out);
+      } catch {
+        upRes.destroy();
+        upstreamSocket.destroy();
+        if (!res.headersSent) res.writeHead(502);
+        res.end();
+        return;
+      }
+      upRes.on('error', () => res.destroy());
       upRes.pipe(res);
     });
     upstream.on('error', () => {
@@ -270,9 +307,13 @@ export async function startEgressProxy({ lookup = defaultLookup, connect = defau
       upstreamSocket.destroy();
     });
     req.pipe(upstream);
+  }
+
+  server.on('connect', (req, clientSocket, head) => {
+    tunnel(req, clientSocket, head).catch(() => clientSocket.destroy());
   });
 
-  server.on('connect', async (req, clientSocket, head) => {
+  async function tunnel(req, clientSocket, head) {
     clientSocket.on('error', () => {});
     const target = parseConnectTarget(req.url);
     if (!target) {
@@ -297,7 +338,7 @@ export async function startEgressProxy({ lookup = defaultLookup, connect = defau
     if (head && head.length) upstream.write(head);
     upstream.pipe(clientSocket);
     clientSocket.pipe(upstream);
-  });
+  }
 
   // A plain ws:// upgrade sent to the proxy is never forwarded (Chromium uses
   // CONNECT for WebSockets through a proxy); Node closes an upgrade nobody handles.

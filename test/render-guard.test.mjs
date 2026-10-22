@@ -22,6 +22,7 @@ import { keysMatch, renderAuth } from '../render-auth.mjs';
 import { createApp } from '../app.mjs';
 
 const FAKE_PUBLIC = '93.184.216.34';
+const FAKE_PUBLIC_V6 = '2606:4700::1111';
 const KEY = 'test-render-key-0123456789';
 
 function collectingLog() {
@@ -147,30 +148,45 @@ describe('render key', () => {
 
 // --- the endpoint, with a real browser ------------------------------------
 
-describe('/render-screenshot', () => {
+describe('/render-screenshot', { timeout: 120_000 }, () => {
   const secretHits = [];
   const originHits = [];
   let secretPort;
   let originPort;
   let secret;
   let origin;
+  let bad;
+  let badPort;
   let guardLog;
   let browser;
   let tmpDir;
   const apps = [];
 
   const lookup = async (host) => {
-    if (host === 'public.test') return [{ address: FAKE_PUBLIC, family: 4 }];
+    if (host === 'public.test' || host === 'bad.test') return [{ address: FAKE_PUBLIC, family: 4 }];
+    // A public IPv6 address that does not answer here, then a working one.
+    if (host === 'dual.test') return [{ address: FAKE_PUBLIC_V6, family: 6 }, { address: FAKE_PUBLIC, family: 4 }];
     if (host === 'rebind.test') return [{ address: '127.0.0.1', family: 4 }];
     return dns.lookup(host, { all: true, verbatim: true });
   };
-  const connect = ({ host, port }) => {
-    if (host === FAKE_PUBLIC) {
-      const socket = net.connect(originPort, '127.0.0.1');
-      Object.defineProperty(socket, 'remoteAddress', { get: () => FAKE_PUBLIC });
-      return socket;
-    }
-    return net.connect({ host, port });
+  // Connections to the fake public names go to local servers. The socket
+  // reports the fake public address it stands for, so the guard's own checks
+  // (pinned lookup, peer address) run unchanged.
+  const connect = (options) => {
+    const local = { 'public.test': originPort, 'dual.test': originPort, 'bad.test': badPort }[options.host];
+    if (local === undefined) return net.connect(options);
+    const toLocal = { [FAKE_PUBLIC]: '127.0.0.1', [FAKE_PUBLIC_V6]: '::1' };
+    const socket = net.connect({
+      ...options,
+      port: local,
+      lookup: (hostname, opts, callback) => options.lookup(hostname, opts, (error, records, family) => {
+        if (error) return callback(error);
+        if (Array.isArray(records)) return callback(null, records.map((r) => ({ ...r, address: toLocal[r.address] })));
+        return callback(null, toLocal[records], family);
+      }),
+    });
+    Object.defineProperty(socket, 'remoteAddress', { get: () => FAKE_PUBLIC });
+    return socket;
   };
 
   async function startApp({ key = KEY, required = false } = {}) {
@@ -236,6 +252,12 @@ describe('/render-screenshot', () => {
       return res.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><body style="background:#0a0"><h1>public page</h1></body>');
     });
     originPort = await listen(origin);
+    // An upstream that answers a status Node's response writer refuses.
+    bad = net.createServer((socket) => {
+      socket.on('error', () => {});
+      socket.once('data', () => socket.end('HTTP/1.1 099 Bad\r\nContent-Length: 0\r\n\r\n'));
+    });
+    badPort = await listen(bad);
     guardLog = collectingLog();
     browser = new GuardedBrowser({ guard: { lookup, connect }, log: guardLog.log });
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'render-guard-'));
@@ -246,6 +268,7 @@ describe('/render-screenshot', () => {
     for (const server of apps) server.close();
     secret.close();
     origin.close();
+    bad.close();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -305,6 +328,23 @@ describe('/render-screenshot', () => {
       assert.match(json.error, /URL refused/, url);
     }
     assert.equal(secretHits.length, before);
+  });
+
+  test('an upstream status Node cannot forward gives a 502, not a crash', async () => {
+    const base = await startApp();
+    const first = await post(base, { url: `http://bad.test:${badPort}/` }, { 'x-api-key': KEY });
+    assert.equal(first.status, 200);
+    // The proxy and the service are still up.
+    const next = await post(base, { url: `http://public.test:${originPort}/` }, { 'x-api-key': KEY });
+    assert.equal(next.status, 200);
+  });
+
+  test('the next checked address is tried when the first does not answer', async () => {
+    const base = await startApp();
+    const before = originHits.filter((u) => u === '/dual').length;
+    const { status } = await post(base, { url: `http://dual.test:${originPort}/dual` }, { 'x-api-key': KEY });
+    assert.equal(status, 200);
+    assert.equal(originHits.filter((u) => u === '/dual').length, before + 1);
   });
 
   test('a public page still renders', async () => {

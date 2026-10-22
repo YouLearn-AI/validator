@@ -4,11 +4,15 @@
 // The rollout keeps thumbnails working at every step:
 //   1. The validator ships with the key set and not required: a request with
 //      no key still renders, a request with the right key renders, a request
-//      with a wrong key is refused (so a misconfigured caller shows up before
-//      the key is required).
+//      whose key does not match the configured one is refused (so a
+//      misconfigured caller shows up before the key is required).
 //   2. The backend sends the key.
 //   3. Once the logs show only key=valid, RENDER_API_KEY_REQUIRED=true.
-// Required with no key configured refuses every request (fail closed).
+// With no key configured and the key not required, the header is ignored and
+// every request logs key=unconfigured: a validator whose secret did not mount
+// keeps rendering thumbnails instead of refusing the backend's key, and the log
+// shows why it can't be required yet. Required with no key configured refuses
+// every request (fail closed).
 //
 // Each request logs one line: [RENDER_AUTH] key=<valid|missing|invalid|unconfigured> required=<bool>.
 // The key itself is never logged.
