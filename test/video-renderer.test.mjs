@@ -12,6 +12,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { UrlRefused } from '../egress-guard.mjs';
+import { chromium } from 'playwright';
 import { GuardedBrowser } from '../guarded-browser.mjs';
 import { createVideoApp } from '../video-app.mjs';
 import { createVideoRenderer, RenderBusy, RenderTimeout } from '../video-renderer.mjs';
@@ -305,5 +306,97 @@ describe('video renderer', { timeout: 300_000 }, () => {
       assert.equal((await post(base, { url: 'http://169.254.169.254/' }, { 'x-api-key': KEY })).status, 400);
       assert.equal((await post(base, {}, { 'x-api-key': KEY })).status, 400);
     });
+  });
+});
+
+// --- teardown with a browser that misbehaves (fakes, no Chromium) -----------------------------------------
+
+describe('video renderer teardown', { timeout: 120_000 }, () => {
+  const publicLookup = async () => [{ address: FAKE_PUBLIC, family: 4 }];
+  const silent = { info() {}, warn() {}, error() {}, log() {} };
+
+  function fakeBrowser({ closeHangs = false, screenshotDelayMs = 0, gotoHangs = false } = {}) {
+    const state = { resets: 0, writes: [] };
+    const page = {
+      clock: { install: async () => {}, pauseAt: async () => {}, runFor: async () => {} },
+      goto: () => (gotoHangs ? new Promise(() => {}) : Promise.resolve()),
+      evaluate: async () => null,
+      mouse: { click: async () => {} },
+      keyboard: { press: async () => {} },
+      async screenshot({ path: file } = {}) {
+        await new Promise((r) => setTimeout(r, screenshotDelayMs));
+        if (file) {
+          // As Playwright's client does: make the parent directory, then write.
+          fs.mkdirSync(path.dirname(file), { recursive: true });
+          fs.writeFileSync(file, 'png');
+          state.writes.push(file);
+        }
+        return Buffer.from('jpg');
+      },
+    };
+    const context = {
+      newPage: async () => page,
+      newCDPSession: async () => ({ send: async () => {} }),
+      close: () => (closeHangs ? new Promise(() => {}) : Promise.resolve()),
+    };
+    return {
+      state,
+      newContext: async () => context,
+      reset: async () => { state.resets += 1; },
+    };
+  }
+
+  test('a context that never closes is given up within the teardown budget, and the browser is killed', async () => {
+    const browser = fakeBrowser({ closeHangs: true, gotoHangs: true });
+    const render = createVideoRenderer(browser, {
+      checkOptions: { lookup: publicLookup }, options: { deadlineMs: 300, teardownMs: 1000 }, log: silent,
+    });
+    const t0 = Date.now();
+    await assert.rejects(render({ url: 'http://public.test/' }), RenderTimeout);
+    const took = Date.now() - t0;
+    assert.ok(took < 300 + 1000 + 1200, `held ${took} ms`);
+    assert.equal(browser.state.resets, 1);
+    await assert.rejects(render({ url: 'http://public.test/' }), RenderTimeout); // not RenderBusy
+  });
+
+  test('the frames directory is removed after the last screenshot write, not before', async () => {
+    const browser = fakeBrowser({ screenshotDelayMs: 400 });
+    const render = createVideoRenderer(browser, {
+      checkOptions: { lookup: publicLookup }, options: { deadlineMs: 200, teardownMs: 3000 }, log: silent,
+    });
+    await assert.rejects(render({ url: 'http://public.test/' }), RenderTimeout);
+    await new Promise((r) => setTimeout(r, 600));
+    assert.ok(browser.state.writes.length > 0, 'a screenshot was in flight at the deadline');
+    for (const file of browser.state.writes) assert.ok(!fs.existsSync(path.dirname(file)), `left ${path.dirname(file)}`);
+  });
+
+  test('a reset during a launch discards that launch; the next render launches its own', async () => {
+    const servers = [];
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const guarded = new GuardedBrowser({
+      log: silent,
+      launchServer: async (options) => {
+        const server = await chromium.launchServer(options);
+        servers.push(server);
+        if (servers.length === 1) await gate; // the first launch finishes only after the reset
+        return server;
+      },
+    });
+    try {
+      const first = guarded.browser();
+      first.catch(() => {});
+      while (servers.length === 0) await new Promise((r) => setTimeout(r, 20));
+      await guarded.reset();
+      const second = await guarded.browser();
+      assert.ok(second.isConnected());
+      release();
+      await assert.rejects(first, /outlived a reset/);
+      assert.equal(servers.length, 2);
+      assert.notEqual(servers[0].process().exitCode ?? servers[0].process().signalCode, null, 'the obsolete Chromium was killed');
+      assert.equal(await guarded.browser(), second, 'the running browser stays the current one');
+    } finally {
+      await guarded.close();
+    }
   });
 });

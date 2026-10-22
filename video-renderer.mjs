@@ -42,7 +42,9 @@ export const VIDEO_DEFAULTS = Object.freeze({
   maxBytes: 9_000_000, // iMessage downloads a clip only under 10 MB in all (TN3156)
   gotoTimeoutMs: 30_000,
   deadlineMs: 100_000,
-  teardownMs: 10_000, // per cleanup step, and for the render to stop after the deadline
+  // The whole teardown after a render (or its deadline): release, wait, kill if needed, remove the frames.
+  // deadlineMs + teardownMs = 115 s stays under the service's 120 s request timeout.
+  teardownMs: 15_000,
 });
 
 const FFMPEG_KILL_GRACE_MS = 2_000;
@@ -204,12 +206,14 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       check() {
         if (signal.aborted) throw new RenderTimeout(o.deadlineMs);
       },
-      async close() {
+      // Releases everything within the time left before `until` (an absolute time); false if a step stalled.
+      async close(until) {
         closed = true;
         let stalled = false;
         while (disposers.length) {
           const dispose = disposers.pop();
-          const ok = await within(Promise.resolve().then(dispose), o.teardownMs).then(() => true, (e) => !(e instanceof StepTimeout));
+          const ok = await within(Promise.resolve().then(dispose), Math.max(0, until - Date.now()))
+            .then(() => true, (e) => !(e instanceof StepTimeout));
           if (!ok) stalled = true;
         }
         return !stalled;
@@ -217,11 +221,11 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     };
   }
 
-  async function film(url, signal, scope) {
+  async function film(url, signal, scope, files) {
     const t0 = Date.now();
     await checkUrl(url, { log, ...checkOptions });
     scope.check();
-    const dir = await scope.own(await fs.mkdtemp(path.join(os.tmpdir(), 'i609-')), (d) => fs.rm(d, { recursive: true, force: true }));
+    const dir = await files.own(await fs.mkdtemp(path.join(os.tmpdir(), 'i609-')), (d) => fs.rm(d, { recursive: true, force: true }));
     const context = await scope.own(
       await guardedBrowser.newContext({ viewport: { width: o.width, height: o.height }, deviceScaleFactor: 1 }),
       (c) => c.close(),
@@ -298,14 +302,15 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     if (busy) throw new RenderBusy();
     busy = true;
     const controller = new AbortController();
-    const scope = createScope(controller.signal);
+    const scope = createScope(controller.signal); // the browser context
+    const files = createScope(controller.signal); // the frames directory, removed last
     const stopped = new Promise((_, reject) => {
       controller.signal.addEventListener('abort', () => reject(new RenderTimeout(o.deadlineMs)), { once: true });
     });
     stopped.catch(() => {});
     const timer = setTimeout(() => controller.abort(), o.deadlineMs);
-    const filming = film(String(url || '').trim(), controller.signal, scope);
-    filming.catch(() => {});
+    const filming = film(String(url || '').trim(), controller.signal, scope, files);
+    const settled = filming.then(() => {}, () => {});
     try {
       const result = await Promise.race([filming, stopped]);
       log.info(`[RENDER_VIDEO] host=${result.meta.url_host} video=${Boolean(result.video)} reason=${result.reason || '-'} `
@@ -315,15 +320,20 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     } finally {
       clearTimeout(timer);
       controller.abort();
-      // Release the context, ffmpeg and the frames, then wait for the render to stop. A browser that does not
-      // let go is ended, so the next render starts clean.
-      const released = await scope.close();
-      const ended = await within(filming.then(() => {}, () => {}), o.teardownMs).then(() => true, () => false);
+      // One budget for the whole teardown, so a render holds this instance at most deadlineMs + teardownMs.
+      // Stop the browser work first (ffmpeg stops on the abort), wait for the render to end, end Chromium if
+      // either stalls, and only then remove the frames, so no screenshot write can land after it.
+      const until = Date.now() + o.teardownMs;
+      const left = () => Math.max(0, until - Date.now());
+      const released = await scope.close(until);
+      let ended = await within(settled, left()).then(() => true, () => false);
       if (!released || !ended) {
-        log.warn(`[RENDER_VIDEO] teardown stalled (released=${released} ended=${ended}); restarting the browser`);
-        await guardedBrowser.reset();
-        await within(filming.then(() => {}, () => {}), o.teardownMs).catch(() => {});
+        log.warn(`[RENDER_VIDEO] teardown stalled (released=${released} ended=${ended}); killing the browser`);
+        await within(guardedBrowser.reset(), left()).catch(() => {});
+        ended = await within(settled, left()).then(() => true, () => false);
       }
+      await files.close(Math.max(until, Date.now() + 1000));
+      if (!ended) log.warn('[RENDER_VIDEO] the render had not ended at the end of the teardown budget');
       busy = false;
     }
   };

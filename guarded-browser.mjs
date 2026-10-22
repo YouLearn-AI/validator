@@ -31,17 +31,18 @@ export function sandboxEnabled(env = process.env) {
 
 export class GuardedBrowser {
   /**
-   * @param {{ guard?: object, sandbox?: boolean, log?: Console, launch?: Function }} [options]
+   * @param {{ guard?: object, sandbox?: boolean, log?: Console, launchServer?: Function }} [options]
    *   guard: options for startEgressProxy (tests only: a fake lookup or connect).
    */
-  constructor({ guard = {}, sandbox = sandboxEnabled(), log = console, launch = (o) => chromium.launch(o) } = {}) {
+  constructor({ guard = {}, sandbox = sandboxEnabled(), log = console, launchServer = (o) => chromium.launchServer(o) } = {}) {
     this.guardOptions = { log, ...guard };
     this.sandbox = sandbox;
     this.log = log;
-    this.launch = launch;
+    this.launchServer = launchServer;
     this.proxy = null;
-    this.browserInstance = null;
-    this.launching = null;
+    this.current = null; // { server, browser } of the running Chromium
+    this.launching = null; // { generation, promise }
+    this.generation = 0; // bumped by reset(): a launch from an older generation is discarded
   }
 
   async egressProxy() {
@@ -52,26 +53,50 @@ export class GuardedBrowser {
     return this.proxy;
   }
 
-  async browser() {
-    if (this.browserInstance && this.browserInstance.isConnected()) return this.browserInstance;
-    if (this.launching) return this.launching;
-    this.launching = (async () => {
-      const proxy = await this.egressProxy();
-      if (!this.sandbox) this.log.warn('[RENDER_SANDBOX] off: CHROMIUM_SANDBOX=off, Chromium runs without its sandbox');
-      const browser = await this.launch({
-        headless: true,
-        chromiumSandbox: this.sandbox,
-        args: CHROMIUM_ARGS,
-        proxy: { server: proxy.url },
-      });
-      this.browserInstance = browser;
-      return browser;
-    })();
-    try {
-      return await this.launching;
-    } finally {
-      this.launching = null;
+  // Chromium runs as a browser server, so reset() can kill its process at once (BrowserServer.kill) instead of
+  // waiting on a graceful close that Playwright gives up to 30 s.
+  async launch(generation) {
+    const proxy = await this.egressProxy();
+    if (!this.sandbox) this.log.warn('[RENDER_SANDBOX] off: CHROMIUM_SANDBOX=off, Chromium runs without its sandbox');
+    const server = await this.launchServer({
+      // Its control socket listens on loopback only (the page can't reach loopback through the guard).
+      host: '127.0.0.1',
+      headless: true,
+      chromiumSandbox: this.sandbox,
+      args: CHROMIUM_ARGS,
+      proxy: { server: proxy.url },
+    });
+    if (generation !== this.generation) {
+      await server.kill().catch(() => {});
+      throw new Error('Browser launch outlived a reset');
     }
+    let browser;
+    try {
+      browser = await chromium.connect(server.wsEndpoint());
+    } catch (error) {
+      await server.kill().catch(() => {});
+      throw error;
+    }
+    if (generation !== this.generation) {
+      await server.kill().catch(() => {});
+      throw new Error('Browser launch outlived a reset');
+    }
+    this.current = { server, browser };
+    return browser;
+  }
+
+  async browser() {
+    if (this.current && this.current.browser.isConnected()) return this.current.browser;
+    if (!this.launching || this.launching.generation !== this.generation) {
+      const generation = this.generation;
+      const promise = this.launch(generation);
+      this.launching = { generation, promise };
+      promise.then(
+        () => { if (this.launching?.promise === promise) this.launching = null; },
+        () => { if (this.launching?.promise === promise) this.launching = null; },
+      );
+    }
+    return this.launching.promise;
   }
 
   /** A fresh context for one render; the caller closes it. */
@@ -84,16 +109,20 @@ export class GuardedBrowser {
     });
   }
 
-  /** Ends the browser (its processes too); the next render launches a new one. The proxy stays. */
+  /**
+   * Kills Chromium now (its process and children); the next render launches a new one. A launch still under
+   * way is discarded when it finishes. The proxy stays.
+   */
   async reset() {
-    const browser = this.browserInstance;
-    this.browserInstance = null;
-    if (browser) await browser.close().catch(() => {});
+    this.generation += 1;
+    this.launching = null;
+    const current = this.current;
+    this.current = null;
+    if (current) await current.server.kill().catch(() => {});
   }
 
   async close() {
-    if (this.browserInstance && this.browserInstance.isConnected()) await this.browserInstance.close();
-    this.browserInstance = null;
+    await this.reset();
     if (this.proxy) {
       const proxy = await this.proxy;
       this.proxy = null;
