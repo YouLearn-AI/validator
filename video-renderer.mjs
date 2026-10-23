@@ -34,6 +34,9 @@ export const VIDEO_DEFAULTS = Object.freeze({
   crf: 24,
   preset: 'medium',
   jpegQuality: 80,
+  // The filmed frames go to ffmpeg as JPEG, not PNG: a PNG of a busy canvas took 167 ms against 56 ms (ops I-609,
+  // a projectile interactive on a Mac), and its 120 PNGs passed the deadline on Cloud Run's 2 vCPU.
+  frameQuality: 90,
   // Motion check: per-frame mean change of luma (ffmpeg signalstats YDIF, 0-255). A caret or a ticking digit
   // stays far under it; a moving shape does not. A clip needs MIN_MOVING_FRAMES frames over the threshold.
   motionThreshold: 0.3,
@@ -174,7 +177,7 @@ function run(command, args, { signal } = {}) {
 /** Per-frame YDIF (mean absolute luma change from the previous frame) of the frames in `dir`. */
 async function motionOf(ffmpeg, dir, fps, signal) {
   const out = await run(ffmpeg, [
-    '-hide_banner', '-loglevel', 'error', '-framerate', String(fps), '-i', path.join(dir, 'f%04d.png'),
+    '-hide_banner', '-loglevel', 'error', '-framerate', String(fps), '-i', path.join(dir, 'f%04d.jpg'),
     '-vf', 'signalstats,metadata=mode=print:key=lavfi.signalstats.YDIF:file=-', '-f', 'null', '-',
   ], { signal });
   return [...out.matchAll(/lavfi\.signalstats\.YDIF=([0-9.]+)/g)].map((m) => Number(m[1]));
@@ -188,14 +191,15 @@ async function encodeLoop(ffmpeg, dir, frames, o, signal) {
   const tail = (o.fadeSeconds + 1 / o.fps).toFixed(4);
   const out = path.join(dir, 'clip.mp4');
   const graph = [
-    `[0:v]settb=1/${o.fps},format=yuv444p[a]`,
-    `[1:v]settb=1/${o.fps},format=yuv444p,trim=duration=${tail}[b]`,
+    // JPEG frames are full range; players expect the limited range of yuv420p (else the clip is yuvj420p).
+    `[0:v]scale=in_range=pc:out_range=tv,settb=1/${o.fps},format=yuv444p[a]`,
+    `[1:v]scale=in_range=pc:out_range=tv,settb=1/${o.fps},format=yuv444p,trim=duration=${tail}[b]`,
     `[a][b]xfade=transition=fade:duration=${o.fadeSeconds}:offset=${offset},format=yuv420p[v]`,
   ].join(';');
   await run(ffmpeg, [
     '-hide_banner', '-loglevel', 'error', '-y',
-    '-framerate', String(o.fps), '-i', path.join(dir, 'f%04d.png'),
-    '-loop', '1', '-framerate', String(o.fps), '-i', path.join(dir, 'f0000.png'),
+    '-framerate', String(o.fps), '-i', path.join(dir, 'f%04d.jpg'),
+    '-loop', '1', '-framerate', String(o.fps), '-i', path.join(dir, 'f0000.jpg'),
     '-filter_complex', graph, '-map', '[v]', '-frames:v', String(frames),
     '-c:v', 'libx264', '-profile:v', 'high', '-preset', o.preset, '-crf', String(o.crf), '-tune', 'animation',
     // A ceiling for pages full of noise: 4 s at 4 Mbit/s is about 2 MB, under iMessage's 10 MB.
@@ -299,6 +303,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     progress.stage = 'capture';
     for (let i = 0; i < total; i += 1) {
       scope.check();
+      progress.frame = i;
       if (i === before) {
         // What the page returns is the page's: only a known kind and a point inside the viewport are used.
         target = sanitizeTarget(await page.evaluate(pickControl, PREFER.source), o.width, o.height);
@@ -313,9 +318,9 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       }
       // To a buffer, then into the existing directory without creating it: a write that lands after cleanup
       // fails instead of bringing the directory back (Playwright's own path option makes the directory).
-      const png = await page.screenshot({ type: 'png' });
+      const shot = await page.screenshot({ type: 'jpeg', quality: o.frameQuality });
       scope.check();
-      await fs.writeFile(path.join(dir, `f${String(i).padStart(4, '0')}.png`), png);
+      await fs.writeFile(path.join(dir, `f${String(i).padStart(4, '0')}.jpg`), shot);
       if (i === 0) frame0Jpeg = await page.screenshot({ type: 'jpeg', quality: o.jpegQuality });
       await page.clock.runFor(step);
       await page.evaluate(stepAnimations, step);
@@ -369,7 +374,12 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       try {
         result = await Promise.race([filming, stopped]);
       } catch (error) {
-        if (error instanceof UrlRefused || error instanceof RenderTimeout) throw error;
+        if (error instanceof RenderTimeout) {
+          // The stage and frame only: enough to tell a slow capture from a page that never loads.
+          log.warn(`[RENDER_VIDEO] timeout stage=${progress.stage} frame=${progress.frame ?? '-'} ms=${o.deadlineMs}`);
+          throw error;
+        }
+        if (error instanceof UrlRefused) throw error;
         // Anything else leaves only its stage and code: its message can quote the URL or the page.
         throw new RenderFailed(progress.stage, errorCode(error));
       }
