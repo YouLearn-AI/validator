@@ -5,7 +5,8 @@
 import express from 'express';
 import { UrlRefused } from './egress-guard.mjs';
 import { renderAuth } from './render-auth.mjs';
-import { RenderBusy, RenderTimeout } from './video-renderer.mjs';
+import { errorCode, jsonErrorHandler } from './request-errors.mjs';
+import { RenderBusy, RenderFailed, RenderTimeout } from './video-renderer.mjs';
 
 /**
  * @param {{ renderVideo: Function, key?: string, log?: Console }} options
@@ -40,14 +41,22 @@ export function createVideoApp({ renderVideo, key = process.env.RENDER_API_KEY |
         return res.status(503).json({ success: false, error: error.message });
       }
       if (error instanceof RenderTimeout) return res.status(504).json({ success: false, error: error.message });
-      log.error('[RENDER_VIDEO] failed:', error);
-      return res.status(500).json({ success: false, error: `Video rendering failed: ${error.message}` });
+      // The stage and an allowlisted code only, never the error's message, stack or cause: those quote the
+      // URL (its query can hold a token) and text the page threw.
+      const stage = error instanceof RenderFailed ? error.stage : 'unknown';
+      const code = error instanceof RenderFailed ? error.code : errorCode(error);
+      log.error(`[RENDER_VIDEO] failed stage=${stage} code=${code}`);
+      return res.status(500).json({ success: false, error: 'Video rendering failed', stage, code });
     }
   });
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not Found' });
   });
+
+  // A body that doesn't parse, is too large or is compressed, and anything a route throws: a fixed answer
+  // and a code, never Express's default handler (it logs the error's stack, which can quote the body).
+  app.use(jsonErrorHandler({ log, tag: 'RENDER_VIDEO' }));
 
   return app;
 }

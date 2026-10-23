@@ -4,6 +4,7 @@ import { validateLatex } from './latex-validator.mjs';
 import { renderScreenshot as defaultRenderScreenshot } from './screenshot-renderer.mjs';
 import { UrlRefused } from './egress-guard.mjs';
 import { renderAuth } from './render-auth.mjs';
+import { errorCode, jsonErrorHandler } from './request-errors.mjs';
 
 /**
  * The validator's Express app. server.mjs listens with the defaults; tests pass
@@ -110,11 +111,14 @@ export function createApp({ renderScreenshot = defaultRenderScreenshot, auth = r
       if (error instanceof UrlRefused) {
         return res.status(400).json({ success: false, error: error.message });
       }
+      // A code only: the error's message can quote the URL or text the page threw (ops I-609 review).
+      const code = errorCode(error);
       // eslint-disable-next-line no-console
-      console.error('Screenshot rendering failed:', error);
+      console.error(`[RENDER_SCREENSHOT] failed code=${code}`);
       return res.status(500).json({
         success: false,
-        error: `Screenshot rendering failed: ${error.message}`
+        error: 'Screenshot rendering failed',
+        code,
       });
     }
   });
@@ -123,6 +127,12 @@ export function createApp({ renderScreenshot = defaultRenderScreenshot, auth = r
   app.use((req, res) => {
     res.status(404).json({ error: 'Not Found' });
   });
+
+  // A body that doesn't parse, is too large or is compressed (415, ops I-543), and anything a route throws:
+  // the same status as before, a fixed answer and a code, instead of Express's default handler, which logs
+  // the error's stack (it can quote the body).
+  // eslint-disable-next-line no-console
+  app.use(jsonErrorHandler({ log: { warn: (line) => console.warn(line) }, tag: 'VALIDATOR' }));
 
   return app;
 }

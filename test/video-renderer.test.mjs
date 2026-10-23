@@ -45,6 +45,9 @@ const PAGES = {
     <input id="r" type="range" min="0" max="100" value="10" style="width:600px">
     <div id="bar" style="height:200px;background:#393;width:60px;margin-top:40px"></div>
     <script>document.getElementById('r').oninput = (e) => { document.getElementById('bar').style.width = (e.target.value * 10) + 'px'; };</script></body>`,
+  // Throws text of its own from inside the renderer's page calls.
+  '/throws': `<!doctype html><body><p>page</p><script>
+      document.getAnimations = () => { throw new Error('PAGE-SECRET-MARKER-5521'); };</script></body>`,
   // Hangs its renderer when its button is pressed.
   '/hang': `<!doctype html><body><button onclick="for(;;){}" style="font-size:30px">Start</button></body>`,
   // The whole frame turns from white to black: the loop's end must be all white again.
@@ -116,6 +119,7 @@ describe('video renderer', { timeout: 300_000 }, () => {
       <script>fetch('http://169.254.169.254/computeMetadata/v1/').catch(() => {}); fetch('http://127.0.0.1:${secretPort}/f').catch(() => {});</script>
       <button onclick="document.body.style.background='#f00'">Start</button></body>`;
     origin = http.createServer((req, res) => {
+      if (req.url.startsWith('/stall')) return; // never answers: the navigation times out
       const page = PAGES[req.url];
       if (!page) return res.writeHead(404).end();
       return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(page);
@@ -284,6 +288,77 @@ describe('video renderer', { timeout: 300_000 }, () => {
       const r = await fetch(`${base}/render-video`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
       return { status: r.status, json: await r.json() };
     };
+
+    // Everything the process writes (stdout, stderr, the console) and everything the app logs, while fn runs.
+    async function captured(fn) {
+      const out = [];
+      const writes = [process.stdout.write, process.stderr.write];
+      process.stdout.write = (chunk, ...rest) => { out.push(String(chunk)); return writes[0].call(process.stdout, chunk, ...rest); };
+      process.stderr.write = (chunk, ...rest) => { out.push(String(chunk)); return writes[1].call(process.stderr, chunk, ...rest); };
+      try {
+        await fn(out);
+      } finally {
+        [process.stdout.write, process.stderr.write] = writes;
+      }
+      return out.join('');
+    }
+    const loudLog = (out) => ({
+      info: (...a) => out.push(a.join(' ')), warn: (...a) => out.push(a.join(' ')),
+      error: (...a) => out.push(a.join(' ')), log: (...a) => out.push(a.join(' ')),
+    });
+
+    test('a failed navigation logs its stage and code, never the URL or its token', async () => {
+      const TOKEN = 'URL-TOKEN-SECRET-8841';
+      let answer;
+      const logged = await captured(async (out) => {
+        const app = createVideoApp({ renderVideo: renderer({ gotoTimeoutMs: 1500 }), key: KEY, log: loudLog(out) });
+        const server = http.createServer(app);
+        servers.push(server);
+        const base = `http://127.0.0.1:${await listen(server)}`;
+        answer = await post(base, { url: url(`/stall?token=${TOKEN}`) }, { 'x-api-key': KEY });
+      });
+      assert.equal(answer.status, 500);
+      assert.deepEqual(answer.json, { success: false, error: 'Video rendering failed', stage: 'navigate', code: 'timeout' });
+      assert.match(logged, /\[RENDER_VIDEO\] failed stage=navigate code=timeout/);
+      assert.ok(!logged.includes(TOKEN), 'the token reached a log');
+    });
+
+    test('text the page throws never reaches a log or the answer', async () => {
+      let answer;
+      const logged = await captured(async (out) => {
+        const app = createVideoApp({ renderVideo: renderer(), key: KEY, log: loudLog(out) });
+        const server = http.createServer(app);
+        servers.push(server);
+        const base = `http://127.0.0.1:${await listen(server)}`;
+        answer = await post(base, { url: url('/throws') }, { 'x-api-key': KEY });
+      });
+      assert.equal(answer.status, 500);
+      assert.equal(answer.json.code, 'error');
+      assert.ok(!JSON.stringify(answer.json).includes('PAGE-SECRET-MARKER-5521'));
+      assert.match(logged, /\[RENDER_VIDEO\] failed stage=\w+ code=error/);
+      assert.ok(!logged.includes('PAGE-SECRET-MARKER-5521'), 'page text reached a log');
+    });
+
+    test('a body that does not parse, or is too large, gets a fixed answer and no echo in the logs', async () => {
+      const MARK = 'BODY-SECRET-MARKER-3307';
+      const answers = [];
+      const logged = await captured(async (out) => {
+        const app = createVideoApp({ renderVideo: renderer(), key: KEY, log: loudLog(out) });
+        const server = http.createServer(app);
+        servers.push(server);
+        const base = `http://127.0.0.1:${await listen(server)}`;
+        for (const body of [`{"url": "${MARK}`, JSON.stringify({ url: MARK, pad: 'x'.repeat(20_000) })]) {
+          const r = await fetch(`${base}/render-video`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': KEY }, body });
+          answers.push({ status: r.status, json: await r.json() });
+        }
+      });
+      assert.deepEqual(answers, [
+        { status: 400, json: { success: false, error: 'Request body is not valid JSON', code: 'malformed_json' } },
+        { status: 413, json: { success: false, error: 'Request body is too large', code: 'body_too_large' } },
+      ]);
+      assert.match(logged, /\[RENDER_VIDEO\] request failed: malformed_json/);
+      assert.ok(!logged.includes(MARK), 'the body reached a log');
+    });
 
     test('the key is always required', async () => {
       const base = await start();

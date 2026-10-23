@@ -352,6 +352,61 @@ describe('/render-screenshot', { timeout: 120_000 }, () => {
     assert.equal(originHits.filter((u) => u === '/dual').length, before + 1);
   });
 
+  test('bodies that do not parse, are too large or are compressed get fixed answers, with no echo in the logs', async () => {
+    const MARK = 'VALIDATOR-BODY-MARKER-6612';
+    const out = [];
+    const writes = [process.stdout.write, process.stderr.write];
+    process.stdout.write = (c, ...r) => { out.push(String(c)); return writes[0].call(process.stdout, c, ...r); };
+    process.stderr.write = (c, ...r) => { out.push(String(c)); return writes[1].call(process.stderr, c, ...r); };
+    const answers = [];
+    try {
+      const base = await startApp();
+      const send = async (route, body, headers = {}) => {
+        const r = await fetch(`${base}${route}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': KEY, ...headers }, body });
+        answers.push([route, r.status, (await r.json()).code]);
+      };
+      await send('/validate/mermaid', `{"diagram": "${MARK}`);
+      await send('/render-screenshot', `{"html": "${MARK}`);
+      await send('/validate/latex', JSON.stringify({ text: MARK + 'x'.repeat(300_000) }));
+      await send('/validate/latex', Buffer.from(MARK), { 'content-encoding': 'gzip' });
+    } finally {
+      [process.stdout.write, process.stderr.write] = writes;
+    }
+    assert.deepEqual(answers, [
+      ['/validate/mermaid', 400, 'malformed_json'],
+      ['/render-screenshot', 400, 'malformed_json'],
+      ['/validate/latex', 413, 'body_too_large'],
+      ['/validate/latex', 415, 'encoding_unsupported'],
+    ]);
+    assert.ok(!out.join('').includes(MARK), 'a body reached a log');
+  });
+
+  test('a failed screenshot logs a code, never the error text', async () => {
+    const MARK = 'https://bucket.test/i.html?token=SCREENSHOT-TOKEN-1190';
+    const out = [];
+    const writes = [process.stdout.write, process.stderr.write];
+    process.stdout.write = (c, ...r) => { out.push(String(c)); return writes[0].call(process.stdout, c, ...r); };
+    process.stderr.write = (c, ...r) => { out.push(String(c)); return writes[1].call(process.stderr, c, ...r); };
+    let answer;
+    try {
+      const app = createApp({
+        renderScreenshot: async () => { throw new Error(`page.goto: Timeout 30000ms exceeded. navigating to "${MARK}"`); },
+        auth: renderAuth({ key: KEY, required: false, log: collectingLog().log }),
+      });
+      const server = http.createServer(app);
+      apps.push(server);
+      const r = await fetch(`http://127.0.0.1:${await listen(server)}/render-screenshot`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': KEY }, body: JSON.stringify({ html: '<p>x</p>' }),
+      });
+      answer = { status: r.status, json: await r.json() };
+    } finally {
+      [process.stdout.write, process.stderr.write] = writes;
+    }
+    assert.deepEqual(answer, { status: 500, json: { success: false, error: 'Screenshot rendering failed', code: 'error' } });
+    assert.match(out.join(''), /\[RENDER_SCREENSHOT\] failed code=error/);
+    assert.ok(!out.join('').includes('SCREENSHOT-TOKEN-1190'), 'the error text reached a log');
+  });
+
   test('a public page still renders', async () => {
     const base = await startApp();
     const { status, json } = await post(base, { url: `http://public.test:${originPort}/`, width: 1200, height: 630 }, { 'x-api-key': KEY });

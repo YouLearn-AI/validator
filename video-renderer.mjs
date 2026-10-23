@@ -17,7 +17,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { checkUrl } from './egress-guard.mjs';
+import { checkUrl, UrlRefused } from './egress-guard.mjs';
+import { errorCode } from './request-errors.mjs';
 
 export const VIDEO_DEFAULTS = Object.freeze({
   width: 1200,
@@ -55,6 +56,26 @@ export class RenderBusy extends Error {
   constructor() {
     super('A render is already running on this instance');
     this.name = 'RenderBusy';
+  }
+}
+
+/**
+ * A render that failed for another reason. Its message names only the stage and an allowlisted code: the
+ * underlying error (a Playwright error quotes the URL and page text) is never kept.
+ */
+export class RenderFailed extends Error {
+  constructor(stage, code) {
+    super(`Render failed at ${stage} (${code})`);
+    this.name = 'RenderFailed';
+    this.stage = stage;
+    this.code = code;
+  }
+}
+
+class FfmpegFailed extends Error {
+  constructor(result) {
+    super(`ffmpeg ended (${result})`);
+    this.name = 'FfmpegFailed';
   }
 }
 
@@ -115,7 +136,6 @@ function run(command, args, { signal } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
-    let stderr = '';
     let killTimer;
     const stop = () => {
       child.kill('SIGTERM');
@@ -124,13 +144,13 @@ function run(command, args, { signal } = {}) {
     if (signal?.aborted) stop();
     else signal?.addEventListener('abort', stop, { once: true });
     child.stdout.on('data', (d) => { stdout += d; });
-    child.stderr.on('data', (d) => { stderr += d; });
+    child.stderr.on('data', () => {}); // ffmpeg's messages can name page-derived files; never kept
     child.on('error', () => {}); // a failed spawn is followed by 'close'
     child.on('close', (code, sig) => {
       clearTimeout(killTimer);
       signal?.removeEventListener('abort', stop);
       if (code === 0) resolve(stdout);
-      else reject(new Error(`${path.basename(command)} ended (${code ?? sig}): ${stderr.slice(-400)}`));
+      else reject(new FfmpegFailed(code ?? sig));
     });
   });
 }
@@ -221,9 +241,11 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     };
   }
 
-  async function film(url, signal, scope, files, frames) {
+  async function film(url, signal, scope, files, frames, progress) {
     const t0 = Date.now();
+    progress.stage = 'check_url';
     await checkUrl(url, { log, ...checkOptions });
+    progress.stage = 'open';
     scope.check();
     const dir = await files.own(await fs.mkdtemp(path.join(os.tmpdir(), 'i609-')), (d) => fs.rm(d, { recursive: true, force: true }));
     frames.dir = dir;
@@ -243,7 +265,9 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     await page.clock.install({ time: epoch });
     // A whole second ahead, so the paused time doesn't depend on how long install took.
     await page.clock.pauseAt(epoch + 1000);
+    progress.stage = 'navigate';
     await page.goto(url, { waitUntil: 'networkidle', timeout: o.gotoTimeoutMs });
+    progress.stage = 'settle';
     await page.evaluate(() => document.fonts && document.fonts.ready);
     scope.check();
     await page.evaluate(stepAnimations, 0);
@@ -257,6 +281,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     let action = 'none';
     let actionKind = 'none';
     let target = null;
+    progress.stage = 'capture';
     for (let i = 0; i < total; i += 1) {
       scope.check();
       if (i === before) {
@@ -283,6 +308,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     const captureMs = Date.now() - t0;
     await context.close().catch(() => {});
 
+    progress.stage = 'motion';
     const ydif = await motionOf(ffmpeg, dir, o.fps, signal);
     const movingFrames = ydif.filter((v) => v > o.motionThreshold).length;
     const motion = { maxYdif: Math.max(0, ...ydif), movingFrames, threshold: o.motionThreshold };
@@ -293,6 +319,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     }
     scope.check();
     const tEncode = Date.now();
+    progress.stage = 'encode';
     const video = await encodeLoop(ffmpeg, dir, total, o, signal);
     const done = { ...meta, encodeMs: Date.now() - tEncode, totalMs: Date.now() - t0, bytes: video.length };
     if (video.length > o.maxBytes) return { video: null, frame: frame0Jpeg, reason: 'too_large', meta: done };
@@ -305,6 +332,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
    * @throws {UrlRefused} the URL is not a public http(s) address
    * @throws {RenderBusy} another render is running here
    * @throws {RenderTimeout} the render passed the deadline (the lookup and the cleanup count)
+   * @throws {RenderFailed} anything else, named by stage and code only
    */
   return async function renderVideo({ url }) {
     if (busy) throw new RenderBusy();
@@ -318,10 +346,18 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     stopped.catch(() => {});
     const timer = setTimeout(() => controller.abort(), o.deadlineMs);
     const frames = { dir: null };
-    const filming = film(String(url || '').trim(), controller.signal, scope, files, frames);
+    const progress = { stage: 'start' };
+    const filming = film(String(url || '').trim(), controller.signal, scope, files, frames, progress);
     const settled = filming.then(() => {}, () => {});
     try {
-      const result = await Promise.race([filming, stopped]);
+      let result;
+      try {
+        result = await Promise.race([filming, stopped]);
+      } catch (error) {
+        if (error instanceof UrlRefused || error instanceof RenderTimeout) throw error;
+        // Anything else leaves only its stage and code: its message can quote the URL or the page.
+        throw new RenderFailed(progress.stage, errorCode(error));
+      }
       log.info(`[RENDER_VIDEO] host=${result.meta.url_host} video=${Boolean(result.video)} reason=${result.reason || '-'} `
         + `action=${result.meta.actionKind} max_ydif=${result.meta.motion.maxYdif.toFixed(2)} `
         + `moving=${result.meta.motion.movingFrames} ms=${result.meta.totalMs} bytes=${result.meta.bytes || 0}`);
