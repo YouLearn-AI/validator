@@ -316,7 +316,7 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
   const silent = { info() {}, warn() {}, error() {}, log() {} };
 
   function fakeBrowser({ closeHangs = false, screenshotDelayMs = 0, gotoHangs = false } = {}) {
-    const state = { resets: 0, writes: [] };
+    const state = { resets: 0, shots: 0 };
     const page = {
       clock: { install: async () => {}, pauseAt: async () => {}, runFor: async () => {} },
       goto: () => (gotoHangs ? new Promise(() => {}) : Promise.resolve()),
@@ -324,14 +324,14 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
       mouse: { click: async () => {} },
       keyboard: { press: async () => {} },
       async screenshot({ path: file } = {}) {
+        state.shots += 1;
         await new Promise((r) => setTimeout(r, screenshotDelayMs));
         if (file) {
-          // As Playwright's client does: make the parent directory, then write.
+          // As Playwright's client does with a path: make the directory, then write.
           fs.mkdirSync(path.dirname(file), { recursive: true });
           fs.writeFileSync(file, 'png');
-          state.writes.push(file);
         }
-        return Buffer.from('jpg');
+        return Buffer.from('img');
       },
     };
     const context = {
@@ -359,15 +359,29 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     await assert.rejects(render({ url: 'http://public.test/' }), RenderTimeout); // not RenderBusy
   });
 
+  test('a screenshot that arrives after the whole teardown budget cannot bring the directory back', async () => {
+    const browser = fakeBrowser({ screenshotDelayMs: 2500 });
+    const render = createVideoRenderer(browser, {
+      checkOptions: { lookup: publicLookup }, options: { deadlineMs: 200, teardownMs: 500 }, log: silent,
+    });
+    const before = new Set(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('i609-')));
+    await assert.rejects(render({ url: 'http://public.test/' }), RenderTimeout);
+    await new Promise((r) => setTimeout(r, 3500));
+    const left = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('i609-') && !before.has(n));
+    assert.deepEqual(left, [], `left behind: ${left}`);
+  });
+
   test('the frames directory is removed after the last screenshot write, not before', async () => {
     const browser = fakeBrowser({ screenshotDelayMs: 400 });
     const render = createVideoRenderer(browser, {
       checkOptions: { lookup: publicLookup }, options: { deadlineMs: 200, teardownMs: 3000 }, log: silent,
     });
+    const before = new Set(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('i609-')));
     await assert.rejects(render({ url: 'http://public.test/' }), RenderTimeout);
     await new Promise((r) => setTimeout(r, 600));
-    assert.ok(browser.state.writes.length > 0, 'a screenshot was in flight at the deadline');
-    for (const file of browser.state.writes) assert.ok(!fs.existsSync(path.dirname(file)), `left ${path.dirname(file)}`);
+    assert.ok(browser.state.shots > 0, 'a screenshot was in flight at the deadline');
+    const left = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('i609-') && !before.has(n));
+    assert.deepEqual(left, [], `left behind: ${left}`);
   });
 
   test('a reset during a launch discards that launch; the next render launches its own', async () => {

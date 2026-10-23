@@ -221,11 +221,12 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     };
   }
 
-  async function film(url, signal, scope, files) {
+  async function film(url, signal, scope, files, frames) {
     const t0 = Date.now();
     await checkUrl(url, { log, ...checkOptions });
     scope.check();
     const dir = await files.own(await fs.mkdtemp(path.join(os.tmpdir(), 'i609-')), (d) => fs.rm(d, { recursive: true, force: true }));
+    frames.dir = dir;
     const context = await scope.own(
       await guardedBrowser.newContext({ viewport: { width: o.width, height: o.height }, deviceScaleFactor: 1 }),
       (c) => c.close(),
@@ -254,6 +255,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     const total = before + Math.round(o.afterSeconds * o.fps);
     let frame0Jpeg = null;
     let action = 'none';
+    let actionKind = 'none';
     let target = null;
     for (let i = 0; i < total; i += 1) {
       scope.check();
@@ -262,13 +264,18 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
         if (target) {
           await page.mouse.click(target.x, target.y);
           action = target.kind === 'range' ? `slider "${target.label}"` : `clicked ${target.kind} "${target.label}"`;
+          actionKind = target.kind;
         }
       }
       // A slider moves one step every 3 frames for the first 1.2 s (12 steps), as the I-610 harness moved it.
       if (target?.kind === 'range' && i >= before && i < before + 36 && (i - before) % 3 === 0) {
         await page.keyboard.press('ArrowRight');
       }
-      await page.screenshot({ path: path.join(dir, `f${String(i).padStart(4, '0')}.png`), type: 'png' });
+      // To a buffer, then into the existing directory without creating it: a write that lands after cleanup
+      // fails instead of bringing the directory back (Playwright's own path option makes the directory).
+      const png = await page.screenshot({ type: 'png' });
+      scope.check();
+      await fs.writeFile(path.join(dir, `f${String(i).padStart(4, '0')}.png`), png);
       if (i === 0) frame0Jpeg = await page.screenshot({ type: 'jpeg', quality: o.jpegQuality });
       await page.clock.runFor(step);
       await page.evaluate(stepAnimations, step);
@@ -279,7 +286,8 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     const ydif = await motionOf(ffmpeg, dir, o.fps, signal);
     const movingFrames = ydif.filter((v) => v > o.motionThreshold).length;
     const motion = { maxYdif: Math.max(0, ...ydif), movingFrames, threshold: o.motionThreshold };
-    const meta = { url_host: new URL(url).host, frames: total, fps: o.fps, seconds: total / o.fps, action, motion, captureMs };
+    // action names the control (page text, for the caller); actionKind is what logs may carry.
+    const meta = { url_host: new URL(url).host, frames: total, fps: o.fps, seconds: total / o.fps, action, actionKind, motion, captureMs };
     if (movingFrames < o.minMovingFrames) {
       return { video: null, frame: frame0Jpeg, reason: 'no_motion', meta: { ...meta, totalMs: Date.now() - t0 } };
     }
@@ -309,12 +317,13 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     });
     stopped.catch(() => {});
     const timer = setTimeout(() => controller.abort(), o.deadlineMs);
-    const filming = film(String(url || '').trim(), controller.signal, scope, files);
+    const frames = { dir: null };
+    const filming = film(String(url || '').trim(), controller.signal, scope, files, frames);
     const settled = filming.then(() => {}, () => {});
     try {
       const result = await Promise.race([filming, stopped]);
       log.info(`[RENDER_VIDEO] host=${result.meta.url_host} video=${Boolean(result.video)} reason=${result.reason || '-'} `
-        + `action=${JSON.stringify(result.meta.action)} max_ydif=${result.meta.motion.maxYdif.toFixed(2)} `
+        + `action=${result.meta.actionKind} max_ydif=${result.meta.motion.maxYdif.toFixed(2)} `
         + `moving=${result.meta.motion.movingFrames} ms=${result.meta.totalMs} bytes=${result.meta.bytes || 0}`);
       return result;
     } finally {
@@ -333,7 +342,11 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
         ended = await within(settled, left()).then(() => true, () => false);
       }
       await files.close(Math.max(until, Date.now() + 1000));
-      if (!ended) log.warn('[RENDER_VIDEO] the render had not ended at the end of the teardown budget');
+      if (!ended) {
+        log.warn('[RENDER_VIDEO] the render had not ended at the end of the teardown budget');
+        // Whatever it still writes goes when it ends.
+        settled.then(() => (frames.dir ? fs.rm(frames.dir, { recursive: true, force: true }) : null)).catch(() => {});
+      }
       busy = false;
     }
   };
