@@ -45,6 +45,13 @@ const PAGES = {
     <input id="r" type="range" min="0" max="100" value="10" style="width:600px">
     <div id="bar" style="height:200px;background:#393;width:60px;margin-top:40px"></div>
     <script>document.getElementById('r').oninput = (e) => { document.getElementById('bar').style.width = (e.target.value * 10) + 'px'; };</script></body>`,
+  // A button whose label is the user's text; pressing it starts the motion.
+  '/labelled': `<!doctype html><body style="margin:0;background:#fff">
+    <button id="go" style="position:absolute;left:20px;top:20px;font-size:24px">Start LABEL-SECRET-4410</button>
+    <div id="b" style="position:absolute;top:200px;left:0;width:120px;height:120px;background:#c40"></div>
+    <script>let x = 0, on = false; document.getElementById('go').onclick = () => { on = true; };
+      (function tick() { if (on) { x = (x + 12) % 1080; document.getElementById('b').style.left = x + 'px'; } requestAnimationFrame(tick); })();
+    </script></body>`,
   // Throws text of its own from inside the renderer's page calls.
   '/throws': `<!doctype html><body><p>page</p><script>
       document.getAnimations = () => { throw new Error('PAGE-SECRET-MARKER-5521'); };</script></body>`,
@@ -142,7 +149,7 @@ describe('video renderer', { timeout: 300_000 }, () => {
   test('a page that moves after a click gives a 4 s H.264 loop that iMessage can play', async () => {
     const result = await renderer()({ url: url('/moving') });
     assert.ok(result.video, `no video: ${JSON.stringify(result.meta)}`);
-    assert.match(result.meta.action, /Start/);
+    assert.equal(result.meta.actionKind, 'button');
     const file = path.join(tmpDir, 'moving.mp4');
     fs.writeFileSync(file, result.video);
     const info = probe(file);
@@ -246,7 +253,7 @@ describe('video renderer', { timeout: 300_000 }, () => {
 
   test('a slider is stepped when there is no preferred button', async () => {
     const result = await renderer()({ url: url('/slider') });
-    assert.match(result.meta.action, /^slider/);
+    assert.equal(result.meta.actionKind, 'range');
     assert.ok(result.video, JSON.stringify(result.meta));
   });
 
@@ -305,6 +312,22 @@ describe('video renderer', { timeout: 300_000 }, () => {
     const loudLog = (out) => ({
       info: (...a) => out.push(a.join(' ')), warn: (...a) => out.push(a.join(' ')),
       error: (...a) => out.push(a.join(' ')), log: (...a) => out.push(a.join(' ')),
+    });
+
+    test('a successful render answers and logs no page text, not even the clicked control\'s label', async () => {
+      let answer;
+      const logged = await captured(async (out) => {
+        const app = createVideoApp({ renderVideo: renderer(), key: KEY, log: loudLog(out) });
+        const server = http.createServer(app);
+        servers.push(server);
+        const base = `http://127.0.0.1:${await listen(server)}`;
+        answer = await post(base, { url: url('/labelled') }, { 'x-api-key': KEY });
+      });
+      assert.equal(answer.status, 200);
+      assert.ok(answer.json.video, 'the page moves after its button');
+      assert.equal(answer.json.meta.actionKind, 'button');
+      assert.ok(!JSON.stringify(answer.json).includes('LABEL-SECRET-4410'), 'the label is in the answer');
+      assert.ok(!logged.includes('LABEL-SECRET-4410'), 'the label reached a log');
     });
 
     test('a failed navigation logs its stage and code, never the URL or its token', async () => {

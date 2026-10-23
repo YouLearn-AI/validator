@@ -128,7 +128,8 @@ function pickControl(preferSource) {
   }
   if (!el) return null;
   const r = el.getBoundingClientRect();
-  return { kind, label: label(el), x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  // The label stays in the page: it is the page's text, and nothing outside needs it.
+  return { kind, x: r.left + r.width / 2, y: r.top + r.height / 2 };
 }
 
 // Runs a command and settles only once it has exited. On abort it gets SIGTERM, then SIGKILL after a grace.
@@ -278,7 +279,6 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     const before = Math.round(o.beforeSeconds * o.fps);
     const total = before + Math.round(o.afterSeconds * o.fps);
     let frame0Jpeg = null;
-    let action = 'none';
     let actionKind = 'none';
     let target = null;
     progress.stage = 'capture';
@@ -288,7 +288,6 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
         target = await page.evaluate(pickControl, PREFER.source);
         if (target) {
           await page.mouse.click(target.x, target.y);
-          action = target.kind === 'range' ? `slider "${target.label}"` : `clicked ${target.kind} "${target.label}"`;
           actionKind = target.kind;
         }
       }
@@ -312,8 +311,8 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     const ydif = await motionOf(ffmpeg, dir, o.fps, signal);
     const movingFrames = ydif.filter((v) => v > o.motionThreshold).length;
     const motion = { maxYdif: Math.max(0, ...ydif), movingFrames, threshold: o.motionThreshold };
-    // action names the control (page text, for the caller); actionKind is what logs may carry.
-    const meta = { url_host: new URL(url).host, frames: total, fps: o.fps, seconds: total / o.fps, action, actionKind, motion, captureMs };
+    // actionKind (button, range, canvas/svg, none) is the only trace of the control: its label is page text.
+    const meta = { url_host: new URL(url).host, frames: total, fps: o.fps, seconds: total / o.fps, actionKind, motion, captureMs };
     if (movingFrames < o.minMovingFrames) {
       return { video: null, frame: frame0Jpeg, reason: 'no_motion', meta: { ...meta, totalMs: Date.now() - t0 } };
     }
