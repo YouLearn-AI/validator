@@ -491,6 +491,25 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     await assert.rejects(render({ url: 'http://public.test/' }), RenderTimeout); // not RenderBusy
   });
 
+  test('a timeout logs the stage and frame it stopped at, and nothing from the page', async () => {
+    const lines = [];
+    const log = { ...silent, warn: (line) => lines.push(line) };
+    const hung = createVideoRenderer(fakeBrowser({ gotoHangs: true }), {
+      checkOptions: { lookup: publicLookup }, options: { deadlineMs: 300, teardownMs: 1000 }, log,
+    });
+    await assert.rejects(hung({ url: 'http://public.test/?token=secret' }), RenderTimeout);
+    assert.ok(lines.includes('[RENDER_VIDEO] timeout stage=navigate frame=- ms=300'), lines.join('\n'));
+
+    lines.length = 0;
+    const slow = createVideoRenderer(fakeBrowser({ screenshotDelayMs: 100 }), {
+      checkOptions: { lookup: publicLookup }, options: { deadlineMs: 450, teardownMs: 1000 }, log,
+    });
+    await assert.rejects(slow({ url: 'http://public.test/?token=secret' }), RenderTimeout);
+    const line = lines.find((l) => l.includes('timeout'));
+    assert.match(line, /^\[RENDER_VIDEO\] timeout stage=capture frame=\d+ ms=450$/);
+    assert.ok(!lines.join('\n').includes('secret'));
+  });
+
   test('a screenshot that arrives after the whole teardown budget cannot bring the directory back', async () => {
     const browser = fakeBrowser({ screenshotDelayMs: 2500 });
     const render = createVideoRenderer(browser, {
