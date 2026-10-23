@@ -25,10 +25,24 @@ export const CHROMIUM_ARGS = [
   '--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1',
 ];
 
-// A launch that stalls ends on its own within these bounds (Playwright kills a browser whose launch timed out),
-// so reset() can wait for a launch under way and know its process is gone.
+// Our own watchdogs on starting Chromium and connecting to it: launchServer ignores its timeout option
+// (Playwright 1.64.1 runs it with no deadline), so a launch that never gets ready is given up here, and the
+// browser it brings up later is killed the moment it appears. reset() therefore waits at most
+// LAUNCH_TIMEOUT_MS + CONNECT_TIMEOUT_MS for a launch under way.
 export const LAUNCH_TIMEOUT_MS = 10_000;
 export const CONNECT_TIMEOUT_MS = 5_000;
+
+// `promise`, or an error after `ms`; a result that arrives after that is disposed of.
+function watched(promise, ms, what, disposeLate) {
+  let timer;
+  const expired = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      promise.then((value) => disposeLate(value), () => {}).catch(() => {});
+      reject(new Error(`Browser ${what} timed out`));
+    }, ms);
+  });
+  return Promise.race([promise, expired]).finally(() => clearTimeout(timer));
+}
 
 export function sandboxEnabled(env = process.env) {
   return env.CHROMIUM_SANDBOX !== 'off';
@@ -39,7 +53,11 @@ export class GuardedBrowser {
    * @param {{ guard?: object, sandbox?: boolean, log?: Console, launchServer?: Function }} [options]
    *   guard: options for startEgressProxy (tests only: a fake lookup or connect).
    */
-  constructor({ guard = {}, sandbox = sandboxEnabled(), log = console, launchServer = (o) => chromium.launchServer(o) } = {}) {
+  constructor({
+    guard = {}, sandbox = sandboxEnabled(), log = console, launchServer = (o) => chromium.launchServer(o),
+    launchTimeoutMs = LAUNCH_TIMEOUT_MS,
+  } = {}) {
+    this.launchTimeoutMs = launchTimeoutMs;
     this.guardOptions = { log, ...guard };
     this.sandbox = sandbox;
     this.log = log;
@@ -63,22 +81,26 @@ export class GuardedBrowser {
   async launch(generation) {
     const proxy = await this.egressProxy();
     if (!this.sandbox) this.log.warn('[RENDER_SANDBOX] off: CHROMIUM_SANDBOX=off, Chromium runs without its sandbox');
-    const server = await this.launchServer({
+    const server = await watched(this.launchServer({
       // Its control socket listens on loopback only (the page can't reach loopback through the guard).
       host: '127.0.0.1',
-      timeout: LAUNCH_TIMEOUT_MS,
       headless: true,
       chromiumSandbox: this.sandbox,
       args: CHROMIUM_ARGS,
       proxy: { server: proxy.url },
-    });
+    }), this.launchTimeoutMs, 'launch', (late) => late.kill());
     if (generation !== this.generation) {
       await server.kill().catch(() => {});
       throw new Error('Browser launch outlived a reset');
     }
     let browser;
     try {
-      browser = await chromium.connect(server.wsEndpoint(), { timeout: CONNECT_TIMEOUT_MS });
+      browser = await watched(
+        chromium.connect(server.wsEndpoint(), { timeout: CONNECT_TIMEOUT_MS }),
+        CONNECT_TIMEOUT_MS,
+        'connect',
+        (late) => late.close(),
+      );
     } catch (error) {
       await server.kill().catch(() => {});
       throw error;
@@ -117,8 +139,8 @@ export class GuardedBrowser {
 
   /**
    * Kills Chromium now (its process and children); the next render launches a new one. A launch still under
-   * way is waited for and killed: it can't outlive this call (at most LAUNCH_TIMEOUT_MS + CONNECT_TIMEOUT_MS).
-   * The proxy stays.
+   * way is waited for, at most LAUNCH_TIMEOUT_MS + CONNECT_TIMEOUT_MS (the watchdogs): one that got ready is
+   * killed here; one that never gets ready is given up, and killed if it ever does. The proxy stays.
    */
   async reset() {
     this.generation += 1;

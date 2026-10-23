@@ -549,6 +549,47 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     }
   });
 
+  test('a launch that never gets ready can\'t hold the render slot, and is killed if it ever does', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const servers = [];
+    const guarded = new GuardedBrowser({
+      log: silent,
+      launchTimeoutMs: 800,
+      launchServer: async (options) => {
+        if (servers.length === 0) {
+          servers.push(null);
+          await gate; // Chromium "never" gets ready (until the test lets it)
+          const late = await chromium.launchServer(options);
+          servers[0] = late;
+          return late;
+        }
+        const server = await chromium.launchServer(options);
+        servers.push(server);
+        return server;
+      },
+    });
+    const render = createVideoRenderer(guarded, {
+      checkOptions: { lookup: publicLookup }, options: { deadlineMs: 300, teardownMs: 500 }, log: silent,
+    });
+    try {
+      const t0 = Date.now();
+      await assert.rejects(render({ url: 'http://public.test/' }));
+      assert.ok(Date.now() - t0 < 300 + 500 + 800 + 1500, `slot held ${Date.now() - t0} ms`);
+      // The slot is free: the next render gets its own browser.
+      const browser2 = await guarded.browser();
+      assert.ok(browser2.isConnected());
+      release();
+      while (!servers[0]) await new Promise((r) => setTimeout(r, 50));
+      const late = servers[0].process();
+      for (let i = 0; i < 100 && (late.exitCode ?? late.signalCode) === null; i += 1) await new Promise((r) => setTimeout(r, 50));
+      assert.notEqual(late.exitCode ?? late.signalCode, null, 'the late Chromium was not killed');
+    } finally {
+      release();
+      await guarded.close();
+    }
+  });
+
   test('a reset during a launch discards that launch; the next render launches its own', async () => {
     const servers = [];
     let release;

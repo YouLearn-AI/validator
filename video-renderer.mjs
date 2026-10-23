@@ -44,8 +44,8 @@ export const VIDEO_DEFAULTS = Object.freeze({
   gotoTimeoutMs: 30_000,
   deadlineMs: 85_000,
   // The whole teardown after a render (or its deadline): release, wait, kill if needed, remove the frames.
-  // deadlineMs + teardownMs + a browser reset (a launch under way ends within 15 s, guarded-browser.mjs)
-  // = 115 s, under the service's 120 s request timeout.
+  // deadlineMs + teardownMs + a browser reset (it waits at most 15 s for a launch under way,
+  // guarded-browser.mjs) = 115 s, under the service's 120 s request timeout.
   teardownMs: 15_000,
 });
 
@@ -389,8 +389,8 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       let ended = await within(settled, left()).then(() => true, () => false);
       if (!released || !ended) {
         log.warn(`[RENDER_VIDEO] teardown stalled (released=${released} ended=${ended}); killing the browser`);
-        // Awaited in full: reset() is bounded on its own (a launch under way ends within 15 s), and Chromium
-        // must be gone before this render's slot is given to the next one.
+        // Awaited in full: reset() is bounded on its own (it waits at most 15 s for a launch under way, the
+        // watchdogs in guarded-browser.mjs), so the slot is freed only after Chromium is gone or given up.
         await guardedBrowser.reset().catch(() => {});
         ended = await within(settled, left()).then(() => true, () => false);
       }
