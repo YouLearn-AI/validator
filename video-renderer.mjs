@@ -303,6 +303,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     progress.stage = 'capture';
     for (let i = 0; i < total; i += 1) {
       scope.check();
+      progress.frame = i;
       if (i === before) {
         // What the page returns is the page's: only a known kind and a point inside the viewport are used.
         target = sanitizeTarget(await page.evaluate(pickControl, PREFER.source), o.width, o.height);
@@ -317,7 +318,6 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       }
       // To a buffer, then into the existing directory without creating it: a write that lands after cleanup
       // fails instead of bringing the directory back (Playwright's own path option makes the directory).
-      progress.frame = i;
       const shot = await page.screenshot({ type: 'jpeg', quality: o.frameQuality });
       scope.check();
       await fs.writeFile(path.join(dir, `f${String(i).padStart(4, '0')}.jpg`), shot);
