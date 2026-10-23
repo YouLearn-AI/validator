@@ -7,6 +7,7 @@ import { createVideoRenderer } from './video-renderer.mjs';
 // Playwright's exit handler, which kills its process group and removes its profile, and Cloud Run starts a
 // fresh instance. The render in flight is answered first.
 const browser = new GuardedBrowser({
+  killable: true,
   onStuckLaunch: () => {
     // eslint-disable-next-line no-console
     console.error('[RENDER_VIDEO] restarting the instance: Chromium did not start');

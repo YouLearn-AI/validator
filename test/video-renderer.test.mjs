@@ -149,7 +149,7 @@ describe('video renderer', { timeout: 300_000 }, () => {
       return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(page);
     });
     originPort = await listen(origin);
-    browser = new GuardedBrowser({ guard: { lookup, connect }, log: silent });
+    browser = new GuardedBrowser({ guard: { lookup, connect }, log: silent, killable: true });
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-test-'));
   });
 
@@ -529,6 +529,7 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     const servers = [];
     const guarded = new GuardedBrowser({
       log: silent,
+      killable: true,
       launchServer: async (options) => {
         await new Promise((r) => setTimeout(r, 1500)); // a slow start, past the deadline
         const server = await chromium.launchServer(options);
@@ -555,6 +556,7 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     const servers = [];
     const guarded = new GuardedBrowser({
       log: silent,
+      killable: true,
       launchTimeoutMs: 800,
       launchServer: async (options) => {
         if (servers.length === 0) {
@@ -611,12 +613,32 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     }
   });
 
+  test('the public validator keeps Playwright\'s own launch, as on main (no browser server, no exit)', async () => {
+    const calls = [];
+    // As screenshot-renderer.mjs builds it: not killable, no onStuckLaunch.
+    const guarded = new GuardedBrowser({
+      log: silent,
+      launchBrowser: (options) => { calls.push('launch'); return chromium.launch(options); },
+      launchServer: (options) => { calls.push('launchServer'); return chromium.launchServer(options); },
+    });
+    try {
+      const browser = await guarded.browser();
+      assert.ok(browser.isConnected());
+      await guarded.reset();
+      assert.equal(browser.isConnected(), false, 'reset closes it');
+      assert.deepEqual(calls, ['launch']);
+    } finally {
+      await guarded.close();
+    }
+  });
+
   test('a reset during a launch discards that launch; the next render launches its own', async () => {
     const servers = [];
     let release;
     const gate = new Promise((r) => { release = r; });
     const guarded = new GuardedBrowser({
       log: silent,
+      killable: true,
       launchServer: async (options) => {
         const server = await chromium.launchServer(options);
         servers.push(server);

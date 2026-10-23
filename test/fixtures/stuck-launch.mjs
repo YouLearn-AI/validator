@@ -6,6 +6,7 @@ import { GuardedBrowser } from '../../guarded-browser.mjs';
 
 const [, , executablePath] = process.argv;
 const browser = new GuardedBrowser({
+  killable: true,
   log: { info() {}, warn() {}, error() {}, log() {} },
   launchTimeoutMs: 1000,
   launchServer: (options) => chromium.launchServer({ ...options, executablePath }),

@@ -51,28 +51,31 @@ export function sandboxEnabled(env = process.env) {
 
 export class GuardedBrowser {
   /**
-   * @param {{ guard?: object, sandbox?: boolean, log?: Console, launchServer?: Function }} [options]
-   *   guard: options for startEgressProxy (tests only: a fake lookup or connect).
-   */
-  /**
-   * onStuckLaunch: called once when Chromium was started but never got ready within LAUNCH_TIMEOUT_MS. Nothing
-   * outside Playwright holds that process before it is ready, so it can't be killed from here; a service that
-   * owns its process (the video renderer) exits, and Playwright's exit handler kills the stuck Chromium's
-   * process group and removes its profile. After that, browser() refuses at once.
+   * @param {object} [options]
+   * @param {object} [options.guard] options for startEgressProxy (tests only: a fake lookup or connect)
+   * @param {boolean} [options.killable] false (the public validator, as on main): Playwright's own timed
+   *   chromium.launch, closed with browser.close(). true (the video renderer): Chromium as a browser server,
+   *   killed at once on reset (BrowserServer.kill), its start and connect under our watchdogs, and
+   *   onStuckLaunch called once when it started but never got ready. Nothing outside Playwright holds such a
+   *   process, so the video service exits then: Playwright's exit handler kills the stuck Chromium's process
+   *   group and removes its profile, and browser() refuses from then on.
    */
   constructor({
-    guard = {}, sandbox = sandboxEnabled(), log = console, launchServer = (o) => chromium.launchServer(o),
+    guard = {}, sandbox = sandboxEnabled(), log = console, killable = false,
+    launchBrowser = (o) => chromium.launch(o), launchServer = (o) => chromium.launchServer(o),
     launchTimeoutMs = LAUNCH_TIMEOUT_MS, onStuckLaunch = null,
   } = {}) {
+    this.killable = killable;
+    this.launchBrowser = launchBrowser;
+    this.launchServer = launchServer;
     this.launchTimeoutMs = launchTimeoutMs;
     this.onStuckLaunch = onStuckLaunch;
     this.stuck = false;
     this.guardOptions = { log, ...guard };
     this.sandbox = sandbox;
     this.log = log;
-    this.launchServer = launchServer;
     this.proxy = null;
-    this.current = null; // { server, browser } of the running Chromium
+    this.current = null; // { browser, kill } of the running Chromium
     this.launching = null; // { generation, promise }
     this.generation = 0; // bumped by reset(): a launch from an older generation is discarded
   }
@@ -85,18 +88,31 @@ export class GuardedBrowser {
     return this.proxy;
   }
 
-  // Chromium runs as a browser server, so reset() can kill its process at once (BrowserServer.kill) instead of
-  // waiting on a graceful close that Playwright gives up to 30 s.
   async launch(generation) {
     const proxy = await this.egressProxy();
     if (!this.sandbox) this.log.warn('[RENDER_SANDBOX] off: CHROMIUM_SANDBOX=off, Chromium runs without its sandbox');
-    const server = await watched(this.launchServer({
-      // Its control socket listens on loopback only (the page can't reach loopback through the guard).
-      host: '127.0.0.1',
+    const options = {
       headless: true,
       chromiumSandbox: this.sandbox,
       args: CHROMIUM_ARGS,
       proxy: { server: proxy.url },
+    };
+    if (!this.killable) {
+      // Playwright's own launch: it times out and kills a Chromium that doesn't get ready.
+      const browser = await this.launchBrowser(options);
+      if (generation !== this.generation) {
+        await browser.close().catch(() => {});
+        throw new Error('Browser launch outlived a reset');
+      }
+      this.current = { browser, kill: () => browser.close() };
+      return browser;
+    }
+    // Chromium as a browser server, so reset() can kill its process at once (BrowserServer.kill) instead of
+    // waiting on a graceful close that Playwright gives up to 30 s.
+    const server = await watched(this.launchServer({
+      ...options,
+      // Its control socket listens on loopback only (the page can't reach loopback through the guard).
+      host: '127.0.0.1',
     }), this.launchTimeoutMs, 'launch', (late) => late.kill(), () => {
       if (this.stuck) return;
       this.stuck = true;
@@ -123,7 +139,7 @@ export class GuardedBrowser {
       await server.kill().catch(() => {});
       throw new Error('Browser launch outlived a reset');
     }
-    this.current = { server, browser };
+    this.current = { browser, kill: () => server.kill() };
     return browser;
   }
 
@@ -153,9 +169,9 @@ export class GuardedBrowser {
   }
 
   /**
-   * Kills Chromium now (its process and children); the next render launches a new one. A launch still under
-   * way is waited for, at most LAUNCH_TIMEOUT_MS + CONNECT_TIMEOUT_MS (the watchdogs): one that got ready is
-   * killed here; one that never gets ready is given up, and killed if it ever does. The proxy stays.
+   * Ends Chromium (killable: kills its process at once; otherwise browser.close()); the next render launches a
+   * new one. A launch still under way is waited for (killable: at most LAUNCH_TIMEOUT_MS + CONNECT_TIMEOUT_MS,
+   * the watchdogs) and ended when it returns. The proxy stays.
    */
   async reset() {
     this.generation += 1;
@@ -163,7 +179,7 @@ export class GuardedBrowser {
     this.launching = null;
     const current = this.current;
     this.current = null;
-    if (current) await current.server.kill().catch(() => {});
+    if (current) await current.kill().catch(() => {});
     // launch() kills the server of an older generation itself, after its launch or its connect returns.
     if (pending) await pending.then(() => {}, () => {});
   }
