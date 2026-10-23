@@ -33,11 +33,12 @@ export const LAUNCH_TIMEOUT_MS = 10_000;
 export const CONNECT_TIMEOUT_MS = 5_000;
 
 // `promise`, or an error after `ms`; a result that arrives after that is disposed of.
-function watched(promise, ms, what, disposeLate) {
+function watched(promise, ms, what, disposeLate, onExpire = () => {}) {
   let timer;
   const expired = new Promise((_, reject) => {
     timer = setTimeout(() => {
       promise.then((value) => disposeLate(value), () => {}).catch(() => {});
+      onExpire();
       reject(new Error(`Browser ${what} timed out`));
     }, ms);
   });
@@ -53,11 +54,19 @@ export class GuardedBrowser {
    * @param {{ guard?: object, sandbox?: boolean, log?: Console, launchServer?: Function }} [options]
    *   guard: options for startEgressProxy (tests only: a fake lookup or connect).
    */
+  /**
+   * onStuckLaunch: called once when Chromium was started but never got ready within LAUNCH_TIMEOUT_MS. Nothing
+   * outside Playwright holds that process before it is ready, so it can't be killed from here; a service that
+   * owns its process (the video renderer) exits, and Playwright's exit handler kills the stuck Chromium's
+   * process group and removes its profile. After that, browser() refuses at once.
+   */
   constructor({
     guard = {}, sandbox = sandboxEnabled(), log = console, launchServer = (o) => chromium.launchServer(o),
-    launchTimeoutMs = LAUNCH_TIMEOUT_MS,
+    launchTimeoutMs = LAUNCH_TIMEOUT_MS, onStuckLaunch = null,
   } = {}) {
     this.launchTimeoutMs = launchTimeoutMs;
+    this.onStuckLaunch = onStuckLaunch;
+    this.stuck = false;
     this.guardOptions = { log, ...guard };
     this.sandbox = sandbox;
     this.log = log;
@@ -88,7 +97,12 @@ export class GuardedBrowser {
       chromiumSandbox: this.sandbox,
       args: CHROMIUM_ARGS,
       proxy: { server: proxy.url },
-    }), this.launchTimeoutMs, 'launch', (late) => late.kill());
+    }), this.launchTimeoutMs, 'launch', (late) => late.kill(), () => {
+      if (this.stuck) return;
+      this.stuck = true;
+      this.log.error('[RENDER_BROWSER] Chromium did not get ready in time');
+      this.onStuckLaunch?.();
+    });
     if (generation !== this.generation) {
       await server.kill().catch(() => {});
       throw new Error('Browser launch outlived a reset');
@@ -114,6 +128,7 @@ export class GuardedBrowser {
   }
 
   async browser() {
+    if (this.stuck && this.onStuckLaunch) throw new Error('Browser restarting');
     if (this.current && this.current.browser.isConnected()) return this.current.browser;
     if (!this.launching || this.launching.generation !== this.generation) {
       const generation = this.generation;

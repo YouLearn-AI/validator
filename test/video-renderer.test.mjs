@@ -4,7 +4,7 @@
 
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import dns from 'node:dns/promises';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -587,6 +587,27 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     } finally {
       release();
       await guarded.close();
+    }
+  });
+
+  test('a Chromium that starts but never gets ready is killed: the service exits and Playwright reaps it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stuck-launch-'));
+    const pidFile = path.join(dir, 'pid');
+    const fake = path.join(dir, 'fake-chrome.sh');
+    // Started like Chromium, never prints its DevTools endpoint.
+    fs.writeFileSync(fake, `#!/bin/sh\necho $$ > ${pidFile}\nexec sleep 600\n`, { mode: 0o755 });
+    try {
+      const child = spawn(process.execPath, [path.join(import.meta.dirname, 'fixtures', 'stuck-launch.mjs'), fake], { stdio: 'ignore' });
+      const code = await new Promise((resolve) => child.on('exit', (c) => resolve(c)));
+      assert.equal(code, 3, 'the watchdog fired and the process exited');
+      const pid = Number(fs.readFileSync(pidFile, 'utf8'));
+      let alive = true;
+      for (let i = 0; i < 40 && alive; i += 1) {
+        try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 50)); } catch { alive = false; }
+      }
+      assert.equal(alive, false, `the stuck browser process ${pid} outlived the service`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
