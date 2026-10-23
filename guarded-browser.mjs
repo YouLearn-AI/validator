@@ -25,6 +25,11 @@ export const CHROMIUM_ARGS = [
   '--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1',
 ];
 
+// A launch that stalls ends on its own within these bounds (Playwright kills a browser whose launch timed out),
+// so reset() can wait for a launch under way and know its process is gone.
+export const LAUNCH_TIMEOUT_MS = 10_000;
+export const CONNECT_TIMEOUT_MS = 5_000;
+
 export function sandboxEnabled(env = process.env) {
   return env.CHROMIUM_SANDBOX !== 'off';
 }
@@ -61,6 +66,7 @@ export class GuardedBrowser {
     const server = await this.launchServer({
       // Its control socket listens on loopback only (the page can't reach loopback through the guard).
       host: '127.0.0.1',
+      timeout: LAUNCH_TIMEOUT_MS,
       headless: true,
       chromiumSandbox: this.sandbox,
       args: CHROMIUM_ARGS,
@@ -72,7 +78,7 @@ export class GuardedBrowser {
     }
     let browser;
     try {
-      browser = await chromium.connect(server.wsEndpoint());
+      browser = await chromium.connect(server.wsEndpoint(), { timeout: CONNECT_TIMEOUT_MS });
     } catch (error) {
       await server.kill().catch(() => {});
       throw error;
@@ -111,14 +117,18 @@ export class GuardedBrowser {
 
   /**
    * Kills Chromium now (its process and children); the next render launches a new one. A launch still under
-   * way is discarded when it finishes. The proxy stays.
+   * way is waited for and killed: it can't outlive this call (at most LAUNCH_TIMEOUT_MS + CONNECT_TIMEOUT_MS).
+   * The proxy stays.
    */
   async reset() {
     this.generation += 1;
+    const pending = this.launching?.promise;
     this.launching = null;
     const current = this.current;
     this.current = null;
     if (current) await current.server.kill().catch(() => {});
+    // launch() kills the server of an older generation itself, after its launch or its connect returns.
+    if (pending) await pending.then(() => {}, () => {});
   }
 
   async close() {

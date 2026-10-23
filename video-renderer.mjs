@@ -42,9 +42,10 @@ export const VIDEO_DEFAULTS = Object.freeze({
   bufsize: '8M',
   maxBytes: 9_000_000, // iMessage downloads a clip only under 10 MB in all (TN3156)
   gotoTimeoutMs: 30_000,
-  deadlineMs: 100_000,
+  deadlineMs: 85_000,
   // The whole teardown after a render (or its deadline): release, wait, kill if needed, remove the frames.
-  // deadlineMs + teardownMs = 115 s stays under the service's 120 s request timeout.
+  // deadlineMs + teardownMs + a browser reset (a launch under way ends within 15 s, guarded-browser.mjs)
+  // = 115 s, under the service's 120 s request timeout.
   teardownMs: 15_000,
 });
 
@@ -133,6 +134,20 @@ function pickControl(preferSource) {
 }
 
 // Runs a command and settles only once it has exited. On abort it gets SIGTERM, then SIGKILL after a grace.
+const CONTROL_KINDS = new Set(['button', 'range', 'canvas/svg']);
+
+/**
+ * The control pickControl reported, checked in Node: a page can tamper with what an evaluate returns, so only a
+ * known kind and a finite point (clamped to the viewport) pass; anything else is no control.
+ */
+export function sanitizeTarget(raw, width, height) {
+  if (!raw || typeof raw !== 'object' || !CONTROL_KINDS.has(raw.kind)) return null;
+  const x = Number(raw.x);
+  const y = Number(raw.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { kind: raw.kind, x: Math.min(Math.max(x, 0), width - 1), y: Math.min(Math.max(y, 0), height - 1) };
+}
+
 function run(command, args, { signal } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -285,7 +300,8 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     for (let i = 0; i < total; i += 1) {
       scope.check();
       if (i === before) {
-        target = await page.evaluate(pickControl, PREFER.source);
+        // What the page returns is the page's: only a known kind and a point inside the viewport are used.
+        target = sanitizeTarget(await page.evaluate(pickControl, PREFER.source), o.width, o.height);
         if (target) {
           await page.mouse.click(target.x, target.y);
           actionKind = target.kind;
@@ -373,7 +389,9 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       let ended = await within(settled, left()).then(() => true, () => false);
       if (!released || !ended) {
         log.warn(`[RENDER_VIDEO] teardown stalled (released=${released} ended=${ended}); killing the browser`);
-        await within(guardedBrowser.reset(), left()).catch(() => {});
+        // Awaited in full: reset() is bounded on its own (a launch under way ends within 15 s), and Chromium
+        // must be gone before this render's slot is given to the next one.
+        await guardedBrowser.reset().catch(() => {});
         ended = await within(settled, left()).then(() => true, () => false);
       }
       await files.close(Math.max(until, Date.now() + 1000));

@@ -15,7 +15,7 @@ import { UrlRefused } from '../egress-guard.mjs';
 import { chromium } from 'playwright';
 import { GuardedBrowser } from '../guarded-browser.mjs';
 import { createVideoApp } from '../video-app.mjs';
-import { createVideoRenderer, RenderBusy, RenderTimeout } from '../video-renderer.mjs';
+import { createVideoRenderer, RenderBusy, RenderTimeout, sanitizeTarget } from '../video-renderer.mjs';
 
 const FAKE_PUBLIC = '93.184.216.34';
 const KEY = 'test-video-key-0123456789';
@@ -52,6 +52,23 @@ const PAGES = {
     <script>let x = 0, on = false; document.getElementById('go').onclick = () => { on = true; };
       (function tick() { if (on) { x = (x + 12) % 1080; document.getElementById('b').style.left = x + 'px'; } requestAnimationFrame(tick); })();
     </script></body>`,
+  // Tampers with what the renderer's page calls return: its own text as the control's kind.
+  '/hostile': `<!doctype html><body style="margin:0"><p id="t">HOSTILE-SECRET-9032</p><script>
+      const realEval = window.eval;
+      window.eval = function (src) {
+        const value = realEval(src);
+        if (typeof value !== 'function') return value;
+        return function (...args) {
+          const out = value.apply(this, args);
+          return out && typeof out === 'object' && 'kind' in out
+            ? { kind: document.getElementById('t').innerText, x: 50, y: 50 } : out;
+        };
+      };
+</script>
+    <canvas id="c" width="1200" height="400"></canvas><script>
+      const c = document.getElementById('c').getContext('2d'); let x = 0;
+      (function tick() { x = (x + 9) % 1080; c.fillStyle = '#fff'; c.fillRect(0, 0, 1200, 400); c.fillStyle = '#06c';
+        c.fillRect(x, 100, 120, 120); requestAnimationFrame(tick); })();</script></body>`,
   // Throws text of its own from inside the renderer's page calls.
   '/throws': `<!doctype html><body><p>page</p><script>
       document.getAnimations = () => { throw new Error('PAGE-SECRET-MARKER-5521'); };</script></body>`,
@@ -317,7 +334,8 @@ describe('video renderer', { timeout: 300_000 }, () => {
     test('a successful render answers and logs no page text, not even the clicked control\'s label', async () => {
       let answer;
       const logged = await captured(async (out) => {
-        const app = createVideoApp({ renderVideo: renderer(), key: KEY, log: loudLog(out) });
+        const log = loudLog(out);
+        const app = createVideoApp({ renderVideo: createVideoRenderer(browser, { checkOptions: { lookup }, log }), key: KEY, log });
         const server = http.createServer(app);
         servers.push(server);
         const base = `http://127.0.0.1:${await listen(server)}`;
@@ -328,6 +346,22 @@ describe('video renderer', { timeout: 300_000 }, () => {
       assert.equal(answer.json.meta.actionKind, 'button');
       assert.ok(!JSON.stringify(answer.json).includes('LABEL-SECRET-4410'), 'the label is in the answer');
       assert.ok(!logged.includes('LABEL-SECRET-4410'), 'the label reached a log');
+    });
+
+    test('a page that tampers with the renderer\'s answers gets no text of its own out', async () => {
+      let answer;
+      const logged = await captured(async (out) => {
+        const log = loudLog(out);
+        const app = createVideoApp({ renderVideo: createVideoRenderer(browser, { checkOptions: { lookup }, log }), key: KEY, log });
+        const server = http.createServer(app);
+        servers.push(server);
+        const base = `http://127.0.0.1:${await listen(server)}`;
+        answer = await post(base, { url: url('/hostile') }, { 'x-api-key': KEY });
+      });
+      assert.equal(answer.status, 200);
+      assert.ok(['none', 'button', 'range', 'canvas/svg'].includes(answer.json.meta.actionKind), answer.json.meta.actionKind);
+      assert.ok(!JSON.stringify(answer.json).includes('HOSTILE-SECRET-9032'), 'page text is in the answer');
+      assert.ok(!logged.includes('HOSTILE-SECRET-9032'), 'page text reached a log');
     });
 
     test('a failed navigation logs its stage and code, never the URL or its token', async () => {
@@ -482,6 +516,39 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     assert.deepEqual(left, [], `left behind: ${left}`);
   });
 
+  test('only a known control kind and a point inside the viewport leave the page', () => {
+    assert.deepEqual(sanitizeTarget({ kind: 'button', x: 10, y: 20 }, 1200, 630), { kind: 'button', x: 10, y: 20 });
+    assert.deepEqual(sanitizeTarget({ kind: 'range', x: -5, y: 9999 }, 1200, 630), { kind: 'range', x: 0, y: 629 });
+    for (const raw of [null, 'button', { kind: 'PAGE TEXT', x: 1, y: 1 }, { kind: 'button', x: 'a', y: 1 },
+      { kind: 'button', x: Infinity, y: 1 }, { kind: ['button'], x: 1, y: 1 }, { kind: { toString: () => 'button' }, x: 1, y: 1 }]) {
+      assert.equal(sanitizeTarget(raw, 1200, 630), null, JSON.stringify(raw));
+    }
+  });
+
+  test('a launch still under way at the deadline is gone before the render slot is free', async () => {
+    const servers = [];
+    const guarded = new GuardedBrowser({
+      log: silent,
+      launchServer: async (options) => {
+        await new Promise((r) => setTimeout(r, 1500)); // a slow start, past the deadline
+        const server = await chromium.launchServer(options);
+        servers.push(server);
+        return server;
+      },
+    });
+    const render = createVideoRenderer(guarded, {
+      checkOptions: { lookup: publicLookup }, options: { deadlineMs: 300, teardownMs: 500 }, log: silent,
+    });
+    try {
+      await assert.rejects(render({ url: 'http://public.test/' }), RenderTimeout);
+      assert.equal(servers.length, 1, 'the launch finished during the teardown');
+      const proc = servers[0].process();
+      assert.notEqual(proc.exitCode ?? proc.signalCode, null, 'Chromium outlived the render slot');
+    } finally {
+      await guarded.close();
+    }
+  });
+
   test('a reset during a launch discards that launch; the next render launches its own', async () => {
     const servers = [];
     let release;
@@ -499,10 +566,11 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
       const first = guarded.browser();
       first.catch(() => {});
       while (servers.length === 0) await new Promise((r) => setTimeout(r, 20));
-      await guarded.reset();
+      const resetting = guarded.reset(); // waits for the launch under way, which finishes only once released
       const second = await guarded.browser();
       assert.ok(second.isConnected());
       release();
+      await resetting;
       await assert.rejects(first, /outlived a reset/);
       assert.equal(servers.length, 2);
       assert.notEqual(servers[0].process().exitCode ?? servers[0].process().signalCode, null, 'the obsolete Chromium was killed');
