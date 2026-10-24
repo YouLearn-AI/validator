@@ -10,13 +10,15 @@
 // then the clip runs on. A motion check drops a clip whose frames don't change. The last 0.3 s fade back into
 // frame 0, so the clip loops without a jump. H.264 High, yuv420p, faststart, no audio: what iMessage plays.
 //
-// The clock moves with fastForward, which fires each timer that falls due at most once per step, so a page draws
-// once per filmed frame (runFor fires every 16 ms animation frame on the way: a WebGL scene drawn in software took
-// ~280 ms a draw and 94 draws for the settle alone, ops I-609). Pages that animate by page time (the frame's
-// timestamp, performance.now, Date) are where they would be; a page that moves a fixed step per animation frame
-// moves one step per filmed frame. When the first frames show the clip can't be filmed by the deadline, it drops to
-// 15 or 10 frames a second, then gets shorter; when even the shortest clip can't be filmed, the answer is the
-// first frame and reason "too_slow", a final answer like "no_motion".
+// The clock runs frame by frame (runFor fires every 16 ms animation frame on the way) while that is cheap, as it
+// is for most pages: then frame 0 shows the page settleMs after load with its fades and eases done (generated pages
+// mostly clamp a frame's time step, to 50 ms say, so one jump would leave them at their start). A page whose
+// frames are expensive (a WebGL scene drawn in software: ~280 ms a draw on a Mac, 94 draws for the settle alone,
+// ops I-609) is moved with fastForward instead, which fires each timer that falls due at most once per step: one
+// draw per filmed frame. Its page-time animations are where they would be; a clamped or fixed per-frame step moves
+// once per filmed frame. When the first frames show the clip can't be filmed by the deadline, it drops to 15 or 10
+// frames a second, then gets shorter; when even the shortest clip can't be filmed, the answer is the first frame
+// and reason "too_slow", a final answer like "no_motion".
 //
 // The page runs in the GuardedBrowser (guarded-browser.mjs): the sandbox on and every request through the
 // egress guard. Its URL must be public http(s) (checkUrl). One render at a time per instance; a hard deadline
@@ -50,6 +52,9 @@ export const VIDEO_DEFAULTS = Object.freeze({
   // animations need it: at 1500 ms frame 0 matched the share thumbnail on the I-610 set (SSIM 0.990-1.000;
   // at 500 ms one page was still fading in, SSIM 0.80).
   settleMs: 1500,
+  // Real time the settle may take frame by frame; past it the rest of the settle is one fastForward, and the
+  // frames are stepped that way too. A canvas page settles in about 0.5 s on a Mac, 1.5 s on Cloud Run.
+  settleBudgetMs: 3000,
   crf: 24,
   preset: 'medium',
   jpegQuality: 80,
@@ -317,6 +322,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
   // The cost of a frame is the mean of the last few: one draw's work can land in its step or in the next
   // screenshot (WebGL draws asynchronously), so one frame alone says little.
   const COST_FRAMES = 10;
+  const SETTLE_SLICE_MS = 50;
   const SLIDER_STEPS = 12;
   const SLIDER_EVERY_TICKS = 3;
   const tickName = (tick) => `t${String(tick).padStart(4, '0')}.jpg`;
@@ -341,7 +347,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     await cdp.send('Animation.enable');
     await cdp.send('Animation.setPlaybackRate', { playbackRate: 0 });
     // The page's clock is paused before its first script runs, so timers and requestAnimationFrame move only
-    // with fastForward: however long the load takes, frame 0 is the same page time after it.
+    // with runFor or fastForward: however long the load takes, frame 0 is the same page time after it.
     const epoch = o.epochMs ?? Math.floor(Date.now() / 1000) * 1000;
     await page.clock.install({ time: epoch });
     // A whole second ahead, so the paused time doesn't depend on how long install took.
@@ -353,11 +359,20 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     scope.check();
     // Whole milliseconds throughout: fastForward drops the fraction (Playwright 1.64 takes `ticks | 0`), and the
     // Web Animations move by the same amount, so the two clocks stay together.
-    let pageMs = Math.round(o.settleMs);
+    let everyFrame = true; // runFor while the page is cheap, else fastForward
+    const advance = (ms) => (everyFrame ? page.clock.runFor(ms) : page.clock.fastForward(ms));
+    const settledMs = Math.round(o.settleMs);
+    let pageMs = 0;
+    const tSettle = Date.now();
     await page.evaluate(stepAnimations, 0);
-    await page.clock.fastForward(pageMs);
-    await page.evaluate(stepAnimations, pageMs);
-    const settledMs = pageMs;
+    while (pageMs < settledMs) {
+      scope.check();
+      const ms = everyFrame ? Math.min(SETTLE_SLICE_MS, settledMs - pageMs) : settledMs - pageMs;
+      await advance(ms);
+      pageMs += ms;
+      if (Date.now() - tSettle > o.settleBudgetMs) everyFrame = false;
+    }
+    await page.evaluate(stepAnimations, settledMs);
 
     const before = Math.round(o.beforeSeconds * o.fps);
     const minTicks = Math.round(o.minSeconds * o.fps);
@@ -415,13 +430,15 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
           tooSlow = true;
           break;
         }
+        // A page too slow for the plan is stepped one draw per frame from here on.
+        if (fitted.stride !== plan.stride || fitted.end !== plan.end) everyFrame = false;
         plan = fitted;
       }
       const next = Math.ceil((tick + 1) / plan.stride) * plan.stride;
       if (next >= plan.end) break;
       const tStep = Date.now();
       const targetMs = settledMs + Math.round((next * 1000) / o.fps);
-      await page.clock.fastForward(targetMs - pageMs);
+      await advance(targetMs - pageMs);
       await page.evaluate(stepAnimations, targetMs - pageMs);
       pageMs = targetMs;
       stepMs.push(Date.now() - tStep);

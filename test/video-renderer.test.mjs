@@ -96,6 +96,13 @@ const PAGES = {
         c.fillStyle = '#fff'; c.fillRect(0, 0, 1200, 630); c.fillStyle = '#c40'; c.fillRect((t / 3) % 1080, 250, 120, 120);
         requestAnimationFrame(tick); }
       requestAnimationFrame(tick);</script></body>`,
+  // Turns from black to white over 1 s of its own time, which moves by at most 50 ms a frame (as generated pages
+  // clamp their time step): frame 0, 1.5 s after load, is white only if the settle ran every frame.
+  '/ease': `<!doctype html><body style="margin:0;background:#000"><div id="w" style="position:fixed;inset:0;background:#fff;opacity:0"></div>
+    <script>let last = performance.now(), t = 0;
+      function tick(now) { t += Math.min(0.05, (now - last) / 1000); last = now;
+        document.getElementById('w').style.opacity = String(Math.min(1, t)); requestAnimationFrame(tick); }
+      requestAnimationFrame(tick);</script></body>`,
   // Every frame new noise: the worst case for the clip's size.
   '/noise': `<!doctype html><body style="margin:0"><canvas id="c" width="1200" height="630"></canvas><script>
       const c = document.getElementById('c').getContext('2d'); const img = c.createImageData(1200, 630);
@@ -268,6 +275,16 @@ describe('video renderer', { timeout: 300_000 }, () => {
     assert.ok(Date.now() - t0 < 6000, `took ${Date.now() - t0} ms`);
     // Not RenderBusy: the slot was released.
     await assert.rejects(stuck({ url: 'http://stuck.test/' }), RenderTimeout);
+  });
+
+  test('a cheap page settles frame by frame: an ease clamped to 50 ms a frame is done by frame 0', async () => {
+    const result = await renderer()({ url: url('/ease') });
+    const file = path.join(tmpDir, 'ease.jpg');
+    fs.writeFileSync(file, result.frame);
+    const luma = spawnSync('ffmpeg', ['-hide_banner', '-i', file, '-vf', 'signalstats,metadata=mode=print:key=lavfi.signalstats.YAVG:file=-',
+      '-f', 'null', '-'], { encoding: 'utf8' });
+    const yavg = Number(/YAVG=([0-9.]+)/.exec(luma.stdout)[1]);
+    assert.ok(yavg > 200, `frame 0 luma ${yavg}: the ease was not run through`);
   });
 
   test('a page where nothing moves gives no video, only the frame', async () => {
@@ -516,17 +533,15 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
   }
 
   // images: what the screenshots return in turn (real JPEGs, for a render that reaches ffmpeg).
+  // The clock's steps are recorded as [kind, ms]; stepDelayMs is what each costs (a draw).
   function fakeBrowser({ closeHangs = false, screenshotDelayMs = 0, gotoHangs = false, stepDelayMs = 0, images = null } = {}) {
-    const state = { resets: 0, shots: 0, forwards: [] };
+    const state = { resets: 0, shots: 0, steps: [] };
+    const step = (kind) => async (ms) => {
+      state.steps.push([kind, ms]);
+      await new Promise((r) => setTimeout(r, stepDelayMs));
+    };
     const page = {
-      clock: {
-        install: async () => {},
-        pauseAt: async () => {},
-        async fastForward(ms) {
-          state.forwards.push(ms);
-          await new Promise((r) => setTimeout(r, stepDelayMs));
-        },
-      },
+      clock: { install: async () => {}, pauseAt: async () => {}, runFor: step('runFor'), fastForward: step('fastForward') },
       goto: () => (gotoHangs ? new Promise(() => {}) : Promise.resolve()),
       evaluate: async () => null,
       mouse: { click: async () => {} },
@@ -612,23 +627,38 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     assert.deepEqual(left, [], `left behind: ${left}`);
   });
 
-  test('a page too slow for 30 fps is filmed at 15: the whole 4 s clip, one clock step per frame, in whole ms', async () => {
+  test('a page too slow for 30 fps is filmed slower: the whole 4 s clip, one fastForward per frame, in whole ms', async () => {
     const browser = fakeBrowser({ screenshotDelayMs: 25, stepDelayMs: 25, images: await frameImages() });
     const render = createVideoRenderer(browser, {
       checkOptions: { lookup: publicLookup }, options: { deadlineMs: 6000, reserveMs: 1500 }, log: silent,
     });
     // ~50 ms a frame: 117 frames left at 30 fps need ~6 s, the 58 left at 15 fps ~3 s; the budget is ~4.5 s.
+    // (15 fps on a quiet machine; 10 fps is right too when its timers fire late.)
     const result = await render({ url: 'http://public.test/' });
     assert.ok(result.video, JSON.stringify(result.meta));
-    assert.equal(result.meta.fps, 15);
-    assert.equal(result.meta.frames, 60);
+    assert.ok([15, 10].includes(result.meta.fps), JSON.stringify(result.meta));
+    assert.equal(result.meta.frames, 4 * result.meta.fps);
     assert.equal(result.meta.seconds, 4);
-    assert.equal(browser.state.forwards[0], 1500, 'the settle is one step');
-    assert.ok(browser.state.forwards.every((ms) => Number.isInteger(ms) && ms > 0), browser.state.forwards.join(','));
-    // Frame 59 (tick 118) is 3933 ms after frame 0, to the millisecond.
-    assert.equal(browser.state.forwards.reduce((a, b) => a + b, 0), 1500 + 3933);
-    // The settle, two steps of 1/30 s while the first frames were timed, then one step per frame to tick 118.
-    assert.equal(browser.state.forwards.length, 1 + 2 + 1 + 57);
+    const { steps } = browser.state;
+    assert.ok(steps.every(([, ms]) => Number.isInteger(ms) && ms > 0), JSON.stringify(steps));
+    // The settle frame by frame (30 slices of 50 ms take 0.75 s, under its 3 s), the first three frames too;
+    // once the clip drops, one fastForward per frame.
+    assert.deepEqual(steps.slice(0, 32).map(([kind]) => kind), Array(32).fill('runFor'));
+    assert.ok(steps.length > 32 && steps.slice(32).every(([kind]) => kind === 'fastForward'), JSON.stringify(steps.slice(32, 36)));
+    // The last frame (tick 118 at 15 fps, 117 at 10) is exactly that page time after load, to the millisecond.
+    const lastTick = 120 - 30 / result.meta.fps;
+    assert.equal(steps.reduce((sum, [, ms]) => sum + ms, 0), 1500 + Math.round((lastTick * 1000) / 30));
+  });
+
+  test('a page whose settle is slow jumps the rest of it, and its frames are stepped one draw each', async () => {
+    const browser = fakeBrowser({ stepDelayMs: 60, images: await frameImages() });
+    const render = createVideoRenderer(browser, {
+      checkOptions: { lookup: publicLookup }, options: { settleBudgetMs: 100, afterSeconds: 0.6, minSeconds: 1 }, log: silent,
+    });
+    await render({ url: 'http://public.test/' });
+    const { steps } = browser.state;
+    assert.deepEqual(steps.slice(0, 4), [['runFor', 50], ['runFor', 50], ['fastForward', 1400], ['fastForward', 33]]);
+    assert.ok(steps.slice(2).every(([kind]) => kind === 'fastForward'));
   });
 
   test('a page too slow even for 2 s at 10 fps answers 200 "too_slow" with its first frame, well before the deadline', async () => {
@@ -636,7 +666,7 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     const browser = fakeBrowser({ screenshotDelayMs: 150, stepDelayMs: 150, images });
     const app = createVideoApp({
       renderVideo: createVideoRenderer(browser, {
-        checkOptions: { lookup: publicLookup }, options: { deadlineMs: 4000, reserveMs: 1000 }, log: silent,
+        checkOptions: { lookup: publicLookup }, options: { deadlineMs: 4000, reserveMs: 1000, settleBudgetMs: 200 }, log: silent,
       }),
       key: KEY,
       log: silent,
