@@ -382,7 +382,8 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     const before = Math.round(o.beforeSeconds * o.fps);
     const minTicks = Math.round(o.minSeconds * o.fps);
     const captureUntil = deadlineAt - o.reserveMs;
-    let plan = { stride: 1, end: before + Math.round(o.afterSeconds * o.fps) };
+    const total = before + Math.round(o.afterSeconds * o.fps);
+    let plan = { stride: 1, end: total };
     const filmed = [];
     const shotMs = [];
     const stepMs = [];
@@ -428,7 +429,8 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       if (filmed.length >= o.probeFrames && stepMs.length > 0) {
         frameMs = mean(recent(shotMs)) + mean(recent(stepMs));
         const fitted = fitCapture(
-          { next: tick + 1, stride: plan.stride, end: plan.end, frameMs, msLeft: captureUntil - Date.now() },
+          // Against the whole clip each time: a cut made on a slow frame grows back when frames get faster.
+          { next: tick + 1, stride: plan.stride, end: total, frameMs, msLeft: captureUntil - Date.now() },
           { strides, minTicks },
         );
         if (!fitted) {
