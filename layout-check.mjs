@@ -50,15 +50,18 @@ export const CHECK_DEFAULTS = Object.freeze({
   // Distinct page errors kept per width and phase (load, control): an error that varies every frame can't crowd out
   // the control's, and one width can't crowd out the other.
   maxErrorsPerPhase: 5,
-  // One step that runs page code (a measurement, the control's click, the screenshot): past it the page is asked
-  // again with a trivial evaluate, for up to hangConfirmMs more. A page that answers is slow, not stopped: the step's
-  // own answer is used when it has come, and the check goes on. A page that does not answer counts as hung (a script
-  // error "Hang" in that phase), and the width ends with what it has. A WebGL page whose main thread was busy for
-  // over 3 s on a cold Cloud Run instance was called hung with no confirmation (I-610, 2026-10-24).
+  // One step that runs page code (a measurement, the control's click, the screenshot): past it the page frame is
+  // asked a trivial evaluate, for up to hangConfirmMs more. A page that answers is slow, not stopped: the step's own
+  // answer is used if it comes within lateStepGraceMs of that, else the step is skipped, and the check goes on. A
+  // page that does not answer counts as hung (a script error "Hang" in that phase), and the width ends with what it
+  // has. On Cloud Run, the screenshot of a three.js page did not come in 8 s while its frame answered at once; with
+  // no confirmation it was called hung (I-610, 2026-10-24).
   stepTimeoutMs: 3000,
   // Cut to what the deadline leaves less answerReserveMs, so a check with a hang still answers before its deadline.
   hangConfirmMs: 5000,
   answerReserveMs: 1000,
+  // A measurement queued before the trivial evaluate has answered by the time it does (the frame runs them in turn).
+  lateStepGraceMs: 500,
   shotQuality: 70,
 });
 
@@ -112,6 +115,31 @@ function within(promise, ms) {
     promise,
     new Promise((_, reject) => { timer = setTimeout(() => reject(new StepTimeout(`step over ${ms} ms`)), ms); }),
   ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * How a step that runs page code ended: { outcome: 'done', value, late } in time or late; 'skipped' when the page
+ * answered `probe()` but the step had not come lateStepGraceMs later; 'hung' when the page did not answer within
+ * hangConfirmMs after stepTimeoutMs, or by `until` (a Date.now() time) if that is sooner. A step's own error is thrown.
+ * @param {Promise} promise the step
+ * @param {() => Promise} probe a trivial evaluate in the page frame; a rejection counts as an answer (not a loop)
+ */
+export async function settleStep(promise, probe, { stepTimeoutMs, hangConfirmMs, lateStepGraceMs, until = Infinity }) {
+  try {
+    return { outcome: 'done', value: await within(promise, stepTimeoutMs), late: false };
+  } catch (error) {
+    if (!(error instanceof StepTimeout)) throw error;
+  }
+  const confirmMs = Math.max(0, Math.min(hangConfirmMs, until - Date.now()));
+  const answered = await within(Promise.resolve().then(probe).catch(() => true), confirmMs)
+    .then(() => true, () => false);
+  if (!answered) return { outcome: 'hung' };
+  try {
+    return { outcome: 'done', value: await within(promise, lateStepGraceMs), late: true };
+  } catch (error) {
+    if (error instanceof StepTimeout) return { outcome: 'skipped' };
+    throw error;
+  }
 }
 
 // Resolves at `at` (a Date.now() time), or rejects with CheckTimeout when the check is stopped first.
@@ -569,34 +597,31 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
       await page.setContent(HOST, { waitUntil: 'load' });
       const frameElement = await page.$('#f');
       const frame = await frameElement.contentFrame();
-      // A step that runs page code. Past stepTimeoutMs, the page frame is asked a trivial evaluate: the frame's main
-      // thread runs one task at a time, so it answers once a long task ends (a slow page) and never in an endless
-      // loop. Answered: the step's own answer when it has come by then, else SKIPPED. Not answered within
+      // A step that runs page code (settleStep). Past stepTimeoutMs, the page frame is asked a trivial evaluate: the
+      // frame's main thread runs one task at a time, so it answers once a long task ends (a slow page) and never in
+      // an endless loop. Answered: the step's own answer if it comes soon after, else SKIPPED. Not answered within
       // hangConfirmMs (cut to the deadline): HUNG, and a "Hang" error is recorded for the phase.
       const step = async (promise) => {
         const t0 = Date.now();
-        try {
-          return await within(promise, o.stepTimeoutMs);
-        } catch (error) {
-          if (!(error instanceof StepTimeout)) throw error;
-        }
-        const confirmMs = Math.max(0, Math.min(o.hangConfirmMs, deadlineAt - o.answerReserveMs - Date.now()));
-        // A rejected evaluate (a frame that navigated or went away) answered too: it is not a loop.
-        const answered = await within(frame.evaluate(() => true).catch(() => true), confirmMs)
-          .then(() => true, () => false);
-        let value = HUNG;
-        if (answered) {
-          value = await within(promise, Math.max(0, t0 + o.stepTimeoutMs + confirmMs - Date.now())).catch((error) => {
-            if (error instanceof StepTimeout) return SKIPPED;
-            throw error;
-          });
-        } else {
-          keep(errorRecord({ name: 'Hang', message: HANG_MESSAGES[phase] }, phase));
-        }
+        const r = await settleStep(promise, () => frame.evaluate(() => true), {
+          stepTimeoutMs: o.stepTimeoutMs, hangConfirmMs: o.hangConfirmMs, lateStepGraceMs: o.lateStepGraceMs,
+          until: deadlineAt - o.answerReserveMs,
+        });
+        if (r.outcome === 'done' && !r.late) return r.value;
+        const stageName = progress.byWidth[width];
         // Times and codes only.
-        log.info(`[CHECK_LAYOUT] slow step width=${width} stage=${progress.byWidth[width]} ms=${Date.now() - t0} `
-          + `answered=${answered} used=${value !== HUNG && value !== SKIPPED}`);
-        return value;
+        log.info(`[CHECK_LAYOUT] slow step width=${width} stage=${stageName} ms=${Date.now() - t0} outcome=${r.outcome}`);
+        if (r.outcome === 'hung') {
+          keep(errorRecord({ name: 'Hang', message: HANG_MESSAGES[phase] }, phase));
+          return HUNG;
+        }
+        if (r.outcome === 'skipped') {
+          // When the skipped step ends after all (or fails with its context), for the logs: how long it really took.
+          promise.then(() => true, () => false).then((ok) => log.info(
+            `[CHECK_LAYOUT] skipped step ended width=${width} stage=${stageName} ms=${Date.now() - t0} ok=${ok}`));
+          return SKIPPED;
+        }
+        return r.value;
       };
 
       stage('load');

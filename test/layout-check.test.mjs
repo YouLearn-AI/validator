@@ -14,6 +14,7 @@ import { GuardedBrowser } from '../guarded-browser.mjs';
 import { createCheckApp, listenWhenReady } from '../check-app.mjs';
 import {
   CHECK_DEFAULTS, CheckBusy, createLayoutChecker, errorRecord, parseWidths, profileFor, sanitizeSample, selectFindings,
+  settleStep,
 } from '../layout-check.mjs';
 
 const FAKE_PUBLIC = '93.184.216.34';
@@ -165,6 +166,43 @@ describe('layout check: parsing and selection (no browser)', () => {
     ]);
     assert.deepEqual(byWidth.get(390).map((x) => x.n), [1, 2, 3]);
     assert.deepEqual(selectFindings(new Map([[390, null], [1280, []]]), 20).ordered, []);
+  });
+});
+
+describe('a slow step: slow page or stopped page (settleStep, fake promises)', () => {
+  const later = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
+  const never = () => new Promise(() => {});
+  const o = { stepTimeoutMs: 100, hangConfirmMs: 400, lateStepGraceMs: 50 };
+
+  test('a step in time is done', async () => {
+    assert.deepEqual(await settleStep(later(10, 'v'), never, o), { outcome: 'done', value: 'v', late: false });
+  });
+
+  test('a step past its time on a page that answers is used when it comes (a measurement queued before the probe)', async () => {
+    assert.deepEqual(await settleStep(later(250, 'v'), () => later(260, true), o), { outcome: 'done', value: 'v', late: true });
+  });
+
+  test('a step that does not come while the page answers is skipped soon after, not a hang (a screenshot)', async () => {
+    const t0 = Date.now();
+    assert.deepEqual(await settleStep(never(), () => later(20, true), o), { outcome: 'skipped' });
+    assert.ok(Date.now() - t0 < 100 + 20 + 50 + 100, `${Date.now() - t0} ms`);
+    // A probe that fails (the frame went away) answered too: not a loop.
+    assert.deepEqual(await settleStep(never(), async () => { throw new Error('detached'); }, o), { outcome: 'skipped' });
+  });
+
+  test('a page that answers nothing is hung after the confirmation, or at once when the deadline leaves none', async () => {
+    let t0 = Date.now();
+    assert.deepEqual(await settleStep(never(), never, o), { outcome: 'hung' });
+    assert.ok(Date.now() - t0 >= 100 + 400 - 5, `${Date.now() - t0} ms`);
+    t0 = Date.now();
+    assert.deepEqual(await settleStep(never(), never, { ...o, until: Date.now() + 120 }), { outcome: 'hung' });
+    assert.ok(Date.now() - t0 < 100 + 400, `${Date.now() - t0} ms`);
+  });
+
+  test('a step that fails throws its error, in time or late', async () => {
+    await assert.rejects(settleStep(Promise.reject(new Error('boom')), never, o), /boom/);
+    const lateFail = new Promise((_, reject) => setTimeout(() => reject(new Error('late boom')), 150));
+    await assert.rejects(settleStep(lateFail, () => later(160, true), o), /late boom/);
   });
 });
 
@@ -418,7 +456,7 @@ describe('layout check (Chromium)', { timeout: 300_000 }, () => {
       assert.equal(f?.seen, 3, JSON.stringify(r.findings));
     }
     assert.equal(r.widths['390'].control, 'none');
-    assert.ok(out.some((l) => /^\[CHECK_LAYOUT\] slow step width=390 stage=sample ms=\d+ answered=true used=true$/.test(l)),
+    assert.ok(out.some((l) => /^\[CHECK_LAYOUT\] slow step width=390 stage=sample ms=\d+ outcome=done$/.test(l)),
       out.join('\n'));
   });
 
