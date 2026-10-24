@@ -208,9 +208,9 @@ const HOOK = () => {
       if (bx) {
         const id = cid(this.canvas);
         // replace an earlier draw of the same text at the same spot (static labels redrawn each frame)
-        LC.texts = LC.texts.filter((t) => !(t.canvas === id && t.text === s && Math.abs(t.box[0] - bx[0]) < 0.5 && Math.abs(t.box[1] - bx[1]) < 0.5));
+        LC.texts = LC.texts.filter((t) => !(t.canvas === id && t.full === s && Math.abs(t.box[0] - bx[0]) < 0.5 && Math.abs(t.box[1] - bx[1]) < 0.5));
         const after = read(this, bx);
-        LC.texts.push({ seq: ++LC.seq, canvas: id, text: s.slice(0, 60), font: this.font, box: bx, under, after, ctx: this });
+        LC.texts.push({ seq: ++LC.seq, canvas: id, full: s, text: s.slice(0, 60), font: this.font, box: bx, under, after, ctx: this });
         if (LC.texts.length > 400) LC.texts.splice(0, LC.texts.length - 400);
       }
       return out;
@@ -236,11 +236,19 @@ function measure() {
   const short = (s) => s.replace(/\s+/g, " ").trim().slice(0, 50);
   const desc = (el) => { if (!el) return "?"; let s = el.tagName.toLowerCase(); if (el.id) s += "#" + el.id; else if (el.classList && el.classList.length) s += "." + [...el.classList].slice(0, 2).join("."); return s; };
   const visible = (el) => { for (let e = el; e && e.nodeType === 1; e = e.parentElement) { const cs = getComputedStyle(e); if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) < 0.15) return false; if (cs.clipPath && /inset\((50|100)%/.test(cs.clipPath)) return false; if (cs.position === "absolute" && cs.clip && cs.clip.startsWith("rect(0")) return false; } return true; };
-  // clip rect of an element: intersection of ancestors with overflow other than visible, and any ancestor <svg>
-  const clipOf = (el) => {
+  // clip rect of a label: the intersection of its own element (a text's container clips it too; a canvas's own box is
+  // the canvas-edge check) and its ancestors with overflow other than visible, and any ancestor <svg>. Overflow does
+  // not apply to inline boxes, so they never clip.
+  const clips = new Map();
+  const clipOf = (el, self) => {
+    const memo = `${self}`;
+    if (!clips.has(el)) clips.set(el, {});
+    const cached = clips.get(el);
+    if (cached[memo]) return cached[memo];
     let c = { l: -1e9, t: -1e9, r: 1e9, b: 1e9, by: null };
-    for (let e = el.parentElement; e && e !== document.documentElement; e = e.parentElement) {
+    for (let e = self ? el : el.parentElement; e && e !== document.documentElement; e = e.parentElement) {
       const cs = getComputedStyle(e);
+      if (cs.display === "inline") continue;
       const isSvgRoot = e.tagName.toLowerCase() === "svg" && cs.overflow !== "visible";
       const clips = isSvgRoot || ["hidden", "clip"].includes(cs.overflowX) || ["hidden", "clip"].includes(cs.overflowY);
       if (!clips) continue;
@@ -249,6 +257,7 @@ function measure() {
       if (nc.r - nc.l < c.r - c.l || nc.b - nc.t < c.b - c.t) nc.by = desc(e); else nc.by = c.by;
       c = nc;
     }
+    cached[memo] = c;
     return c;
   };
   const labels = [];
@@ -288,11 +297,17 @@ function measure() {
     if (t.box[0] < -1 || t.box[2] > cv.width + 1 || t.box[1] < -1 || t.box[3] > cv.height + 1) cutBy.push("the canvas edge");
     labels.push({ kind: "canvas", text: short(t.text), el: cv, cvbox: true, box: b, under: t.under, covered: cov, cutBy, seq: t.seq });
   }
+  // the part of each label that can be seen: its box inside its clip rect and the screen's width (null: none)
+  for (const L of labels) {
+    const c = clipOf(L.el, L.kind !== "canvas");
+    const v = [Math.max(L.box[0], c.l, 0), Math.max(L.box[1], c.t), Math.min(L.box[2], c.r, W), Math.min(L.box[3], c.b)];
+    L.vis = v[2] - v[0] > 1 && v[3] - v[1] > 1 ? v : null;
+  }
   // cut text
   for (const L of labels) {
     const [l, t, r, b] = L.box;
     if (L.kind === "canvas" && L.cutBy.length) { out.push({ type: "cut", where: L.cutBy[0], text: L.text, kind: L.kind, box: L.box }); continue; }
-    const c = clipOf(L.el);
+    const c = clipOf(L.el, L.kind !== "canvas");
     const vis = { l: Math.max(c.l, 0), r: Math.min(c.r, W), t: c.t, b: c.b };
     const outX = Math.max(0, vis.l - l) + Math.max(0, r - vis.r), outY = Math.max(0, c.t - t) + Math.max(0, b - c.b);
     if (b < c.t || t > c.b || r < vis.l || l > vis.r) continue; // fully hidden (scrolled away in a clipped box): not a visible defect
@@ -305,18 +320,21 @@ function measure() {
     if (a.el === b.el && a.kind !== "canvas") continue;
     if (a.kind === "canvas" && b.kind === "canvas" && a.seq === b.seq) continue;
     if (a.kind !== "canvas" && b.kind !== "canvas" && (a.el.contains(b.el) || b.el.contains(a.el))) continue;
-    const ix = Math.min(a.box[2], b.box[2]) - Math.max(a.box[0], b.box[0]), iy = Math.min(a.box[3], b.box[3]) - Math.max(a.box[1], b.box[1]);
+    // the parts that can be seen: text clipped away by an overflow box is not painted where its box says
+    const av = a.vis, bv = b.vis;
+    if (!av || !bv) continue;
+    const ix = Math.min(av[2], bv[2]) - Math.max(av[0], bv[0]), iy = Math.min(av[3], bv[3]) - Math.max(av[1], bv[1]);
     if (ix <= 1 || iy <= 2) continue;
-    const frac = (ix * iy) / Math.max(1, Math.min(area(a.box), area(b.box)));
-    if (frac > 0.15) out.push({ type: "overlap", text: `${a.text} | ${b.text}`, kind: `${a.kind}+${b.kind}`, box: [Math.min(a.box[0], b.box[0]), Math.min(a.box[1], b.box[1]), Math.max(a.box[2], b.box[2]), Math.max(a.box[3], b.box[3])], frac: +frac.toFixed(2) });
+    const frac = (ix * iy) / Math.max(1, Math.min(area(av), area(bv)));
+    if (frac > 0.15) out.push({ type: "overlap", text: `${a.text} | ${b.text}`, kind: `${a.kind}+${b.kind}`, box: [Math.min(av[0], bv[0]), Math.min(av[1], bv[1]), Math.max(av[2], bv[2]), Math.max(av[3], bv[3])], frac: +frac.toFixed(2) });
   }
   // canvas text crossed by drawing under it, or covered by drawing after it
-  for (const L of labels.filter((x) => x.kind === "canvas")) {
+  for (const L of labels.filter((x) => x.kind === "canvas" && x.vis)) {
     if (L.covered > 0.25) out.push({ type: "covered", text: L.text, kind: "canvas", box: L.box, frac: +L.covered.toFixed(2), note: "painted over after the text was drawn" });
     else if (L.under != null && L.under > 0.06) out.push({ type: "crossed", text: L.text, kind: "canvas", box: L.box, frac: +L.under.toFixed(2), note: "drawn over lines or shape edges" });
   }
   // HTML text over a canvas: edge density of the canvas pixels under it
-  for (const L of labels.filter((x) => x.kind === "html")) {
+  for (const L of labels.filter((x) => x.kind === "html" && x.vis)) {
     const [l, t, r, b] = L.box, cx = (l + r) / 2, cy = (t + b) / 2;
     for (const cv of canvases) {
       const cr = cv.getBoundingClientRect();
@@ -337,7 +355,7 @@ function measure() {
     }
   }
   // SVG text crossed by strokes or partly covered by fills of other shapes in the same <svg>
-  for (const L of labels.filter((x) => x.kind === "svg")) {
+  for (const L of labels.filter((x) => x.kind === "svg" && x.vis)) {
     const svg = L.el.ownerSVGElement || L.el.closest("svg"); if (!svg) continue;
     const [l, t, r, b] = L.box; const pts = [];
     for (let i = 1; i <= 7; i++) for (let j = 1; j <= 3; j++) pts.push([l + (r - l) * i / 8, t + (b - t) * j / 4]);
@@ -490,14 +508,21 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
     try {
       progress.stage = 'open';
       const context = await guardedBrowser.newContext(profileFor(width, o));
+      if (signal.aborted) {
+        // The deadline passed while it opened: the teardown may have run already, so it is closed here.
+        await within(context.close(), o.teardownMs).catch(() => {});
+        throw new CheckTimeout();
+      }
       contexts.push(context);
-      if (signal.aborted) throw new CheckTimeout();
       await context.addInitScript(HOOK);
       const page = await context.newPage();
-      const errors = [];
+      // Distinct by phase and fingerprint as they come, so an error thrown every frame can't crowd out a new one.
+      const errors = new Map();
       let phase = 'load';
       page.on('pageerror', (error) => {
-        if (errors.length < o.maxErrors * 2) errors.push(errorRecord(error, phase));
+        const record = errorRecord(error, phase);
+        const key = `${record.phase}|${record.fp}`;
+        if (!errors.has(key) && errors.size < o.maxErrors) errors.set(key, record);
       });
       await page.setContent(HOST, { waitUntil: 'load' });
       const frameElement = await page.$('#f');
@@ -517,7 +542,8 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
         arrived = true;
         gate.arrive(width, null);
         return {
-          width, loaded: false, loadMs: null, pageWidth: 0, control: 'none', shot: null, persistentCount: 0, errors: dedupe(errors),
+          width, loaded: false, loadMs: null, pageWidth: 0, wide: false, control: 'none', shot: null, persistentCount: 0,
+          errors: [...errors.values()],
         };
       }
       const tLoad = Date.now();
@@ -526,10 +552,13 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
       progress.stage = 'sample';
       const seen = new Map();
       let last = sanitizeSample(null);
+      // Wider than the screen at any sample: also when the cap leaves its finding out, the guard needs it.
+      let wide = false;
       for (const [sample, ms] of o.samplesMs.entries()) {
         await waitUntil(tLoad + ms, signal);
         // A page that breaks the measurement (it replaced a built-in it uses) gives an empty sample.
         last = sanitizeSample(await frame.evaluate(measure).catch(() => null));
+        if (last.viewportWidth > 0 && last.pageWidth > last.viewportWidth + 1) wide = true;
         for (const f of last.findings) {
           const key = `${f.type}|${f.kind}|${f.text}`;
           const entry = seen.get(key) || { ...f, seen: 0, sample: -1 };
@@ -572,21 +601,13 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
       }
       await waitUntil(Date.now() + o.controlWatchMs, signal);
       return {
-        width, loaded: true, loadMs, pageWidth: last.pageWidth, control, shot, persistentCount: persistent.length, errors: dedupe(errors),
+        width, loaded: true, loadMs, pageWidth: last.pageWidth, wide, control, shot, persistentCount: persistent.length,
+        errors: [...errors.values()],
       };
     } finally {
       // A width that ends early (an error, the deadline) still reports, so the other width never waits on it.
       if (!arrived) gate.arrive(width, null);
     }
-  }
-
-  function dedupe(errors) {
-    const kept = new Map();
-    for (const e of errors) {
-      const key = `${e.phase}|${e.fp}`;
-      if (!kept.has(key)) kept.set(key, e);
-    }
-    return [...kept.values()];
   }
 
   /**
@@ -629,7 +650,7 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
             { n, width, type, kind, text, box, where, note, seen })),
           errors,
           widths: Object.fromEntries(results.map((r) => [String(r.width), {
-            loaded: r.loaded, load_ms: r.loadMs, page_width: r.pageWidth, control: r.control, shot: r.shot,
+            loaded: r.loaded, load_ms: r.loadMs, page_width: r.pageWidth, wide: r.wide, control: r.control, shot: r.shot,
           }])),
           timings: { total_ms: Date.now() - t0, launch_ms: launchMs },
         };

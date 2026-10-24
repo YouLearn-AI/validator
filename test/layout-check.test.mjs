@@ -46,6 +46,22 @@ const PAGES = {
   secrets: page(`<span style="position:absolute;left:40px;top:40px">PAGE-TEXT-SECRET-4410</span>
     <span style="position:absolute;left:50px;top:42px">PAGE-TEXT-SECRET-4411</span>
     <script>setTimeout(() => { throw new Error('ERROR-SECRET-7781 thrown'); }, 50);</script>`),
+  // Text straight inside a narrow box that hides its overflow (no inner element): the box itself cuts it.
+  clipSelf: page('<div style="width:120px;overflow:hidden;white-space:nowrap;margin:20px;font-size:18px">A long clipped text label here</div>'),
+  // A label scrolled out of a clipping box: not painted, so it overlaps nothing.
+  clippedAway: page(`<div style="position:relative;width:200px;height:40px;overflow:hidden;margin:20px">
+    <span style="position:absolute;left:10px;top:60px;font-size:18px">Hidden lower label</span></div>
+    <span style="position:absolute;left:30px;top:84px;font-size:18px">Visible label below</span>`),
+  // A label longer than 60 characters drawn twice at one spot (fill and stroke): one label, no overlap with itself.
+  longCanvas: page(`<canvas id="c" width="700" height="80"></canvas><script>
+    const c = document.getElementById('c').getContext('2d'); c.font = '14px sans-serif';
+    const t = 'A very long canvas caption that runs on well past sixty characters in all';
+    function draw() { c.clearRect(0, 0, 700, 80); c.fillText(t, 10, 40); c.strokeText(t, 10, 40); requestAnimationFrame(draw); }
+    draw();</script>`),
+  // The same error every frame from load, then a different one from its button.
+  errorFlood: page(`<button id="b">Start</button><p>Flooding</p><script>
+    document.getElementById('b').onclick = () => { throw new TypeError('the button broke'); };
+    (function tick() { requestAnimationFrame(tick); throw new Error('every frame'); })();</script>`),
   // Spins forever once loaded.
   hang: page('<p>Spins</p><script>setTimeout(() => { for (;;) {} }, 200);</script>'),
 };
@@ -124,6 +140,26 @@ describe('layout check: parsing and selection (no browser)', () => {
   });
 });
 
+describe('layout check teardown (a fake browser)', () => {
+  test('a context that opens after the deadline is closed, not left behind', async () => {
+    let closed = 0;
+    const fake = {
+      running: () => true,
+      browser: async () => ({}),
+      newContext: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        return { close: async () => { closed += 1; } };
+      },
+      reset: async () => {},
+    };
+    const silent = { info() {}, warn() {}, error() {} };
+    const r = await createLayoutChecker(fake, { options: { deadlineMs: 20, teardownMs: 30 }, log: silent })({ html: 'x', widths: [390] });
+    assert.equal(r.status, 'timed_out');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(closed, 1);
+  });
+});
+
 describe('layout check (Chromium)', { timeout: 300_000 }, () => {
   let originPort;
   let origin;
@@ -199,6 +235,7 @@ describe('layout check (Chromium)', { timeout: 300_000 }, () => {
     const r = await checker()({ html: PAGES.wide });
     assert.deepEqual(r.findings.filter((f) => f.type === 'wide').map((f) => f.width), [390]);
     assert.ok(r.widths['390'].page_width > 390, String(r.widths['390'].page_width));
+    assert.deepEqual([r.widths['390'].wide, r.widths['1280'].wide], [true, false]);
     assert.equal(r.widths['1280'].shot, null, 'no screenshot for a width with nothing to fix');
   });
 
@@ -215,6 +252,27 @@ describe('layout check (Chromium)', { timeout: 300_000 }, () => {
       assert.notEqual(load.fp, control.fp);
     }
     assert.equal(r.findings.length, 0);
+  });
+
+  test('text cut by its own overflow-hidden box is "cut"', async () => {
+    const r = await checker()({ html: PAGES.clipSelf });
+    assert.deepEqual(r.findings.filter((f) => f.type === 'cut').map((f) => f.width).sort(), [1280, 390], JSON.stringify(r.findings));
+  });
+
+  test('text scrolled out of a clipping box overlaps nothing', async () => {
+    const r = await checker()({ html: PAGES.clippedAway });
+    assert.deepEqual(r.findings.filter((f) => f.type === 'overlap'), []);
+  });
+
+  test('a long canvas label drawn twice at one spot does not overlap itself', async () => {
+    const r = await checker()({ html: PAGES.longCanvas });
+    assert.deepEqual(r.findings.filter((f) => f.type === 'overlap'), [], JSON.stringify(r.findings));
+  });
+
+  test('an error thrown every frame does not crowd out a new one from the control', async () => {
+    const r = await checker()({ html: PAGES.errorFlood, widths: [390] });
+    assert.deepEqual(r.errors.map((e) => `${e.phase}:${e.name}:${e.message}`).sort(),
+      ['control:Error:every frame', 'control:TypeError:the button broke', 'load:Error:every frame']);
   });
 
   test('a clean page has no findings, no errors and no screenshots', async () => {
@@ -320,7 +378,7 @@ describe('layout check (Chromium)', { timeout: 300_000 }, () => {
       assert.deepEqual(Object.keys(json).sort(), ['errors', 'findings', 'findings_total', 'status', 'success', 'timings', 'warm', 'widths']);
       assert.deepEqual(Object.keys(json.findings[0]).sort(), ['box', 'kind', 'n', 'note', 'seen', 'text', 'type', 'where', 'width']);
       assert.deepEqual(Object.keys(json.errors[0]).sort(), ['fp', 'message', 'name', 'phase', 'width']);
-      assert.deepEqual(Object.keys(json.widths['390']).sort(), ['control', 'load_ms', 'loaded', 'page_width', 'shot']);
+      assert.deepEqual(Object.keys(json.widths['390']).sort(), ['control', 'load_ms', 'loaded', 'page_width', 'shot', 'wide']);
       assert.ok(json.findings.some((f) => f.text.includes('PAGE-TEXT-SECRET-4410')));
       assert.ok(json.errors.some((e) => e.message.includes('ERROR-SECRET-7781')));
       const logged = out.join('\n');
