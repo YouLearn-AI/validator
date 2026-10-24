@@ -228,18 +228,23 @@ async function motionOf(ffmpeg, dir, fps, signal) {
   return [...out.matchAll(/lavfi\.signalstats\.YDIF=([0-9.]+)/g)].map((m) => Number(m[1]));
 }
 
-async function encodeLoop(ffmpeg, dir, frames, fps, o, signal) {
-  // The fade ends exactly on the last frame, which is then frame 0 itself, so the loop wraps from frame 0 to
-  // frame 0 (a one-frame hold) with nothing of the end left in it. The fading-in input needs one frame past the
-  // fade for xfade to reach it.
-  const offset = ((frames - 1) / fps - o.fadeSeconds).toFixed(4);
-  const tail = (o.fadeSeconds + 1 / fps).toFixed(4);
+/**
+ * Encodes the frames f0000.jpg... in `dir` as the looping clip (exported for its tests).
+ * The fade ends exactly on the last frame, which is then frame 0 itself, so the loop wraps from frame 0 to
+ * frame 0 (a one-frame hold) with nothing of the end left in it. The fade is a whole number of frames (0.3 s is
+ * 4.5 frames at 15 fps, and a fade that ends between two frames left a fifth of the end in the last one). The
+ * fading-in input needs one frame past the fade for xfade to reach it.
+ */
+export async function encodeLoop(ffmpeg, dir, frames, fps, o, signal) {
+  const fade = Math.max(1, Math.round(o.fadeSeconds * fps)) / fps;
+  const offset = ((frames - 1) / fps - fade).toFixed(6);
+  const tail = (fade + 1 / fps).toFixed(6);
   const out = path.join(dir, 'clip.mp4');
   const graph = [
     // JPEG frames are full range; players expect the limited range of yuv420p (else the clip is yuvj420p).
     `[0:v]scale=in_range=pc:out_range=tv,settb=1/${fps},format=yuv444p[a]`,
     `[1:v]scale=in_range=pc:out_range=tv,settb=1/${fps},format=yuv444p,trim=duration=${tail}[b]`,
-    `[a][b]xfade=transition=fade:duration=${o.fadeSeconds}:offset=${offset},format=yuv420p[v]`,
+    `[a][b]xfade=transition=fade:duration=${fade.toFixed(6)}:offset=${offset},format=yuv420p[v]`,
   ].join(';');
   await run(ffmpeg, [
     '-hide_banner', '-loglevel', 'error', '-y',

@@ -15,7 +15,9 @@ import { UrlRefused } from '../egress-guard.mjs';
 import { chromium } from 'playwright';
 import { GuardedBrowser } from '../guarded-browser.mjs';
 import { createVideoApp } from '../video-app.mjs';
-import { createVideoRenderer, fitCapture, RenderBusy, RenderTimeout, sanitizeTarget } from '../video-renderer.mjs';
+import {
+  createVideoRenderer, encodeLoop, fitCapture, RenderBusy, RenderTimeout, sanitizeTarget, VIDEO_DEFAULTS,
+} from '../video-renderer.mjs';
 
 const FAKE_PUBLIC = '93.184.216.34';
 const KEY = 'test-video-key-0123456789';
@@ -656,6 +658,31 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
       assert.ok(took < 2500, `answered after ${took} ms`);
     } finally {
       server.close();
+    }
+  });
+
+  test('at every frame rate and length the budget can choose, the clip ends on frame 0 exactly', async () => {
+    // Frame 0 white, every other frame black: the last frame of the clip must be white again.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-fade-'));
+    try {
+      const color = (c) => execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', `color=c=${c}:s=64x36`,
+        '-frames:v', '1', '-f', 'image2', '-c:v', 'mjpeg', '-']);
+      const white = color('white');
+      const black = color('black');
+      for (const [fps, frames] of [[30, 120], [30, 61], [15, 60], [15, 59], [15, 32], [15, 31], [10, 40], [10, 23]]) {
+        for (const name of fs.readdirSync(dir)) fs.rmSync(path.join(dir, name));
+        for (let i = 0; i < frames; i += 1) fs.writeFileSync(path.join(dir, `f${String(i).padStart(4, '0')}.jpg`), i === 0 ? white : black);
+        const clip = path.join(dir, 'out.mp4');
+        fs.writeFileSync(clip, await encodeLoop('ffmpeg', dir, frames, fps, VIDEO_DEFAULTS));
+        const luma = spawnSync('ffmpeg', ['-hide_banner', '-i', clip, '-vf', 'signalstats,metadata=mode=print:key=lavfi.signalstats.YAVG:file=-',
+          '-f', 'null', '-'], { encoding: 'utf8' });
+        const yavg = [...luma.stdout.matchAll(/YAVG=([0-9.]+)/g)].map((m) => Number(m[1]));
+        assert.equal(yavg.length, frames, `${fps} fps ${frames} frames`);
+        assert.ok(yavg[0] > 200 && yavg[frames - 2] < yavg[frames - 1], `${fps} fps ${frames} frames: ${yavg.slice(-4)}`);
+        assert.ok(Math.abs(yavg[frames - 1] - yavg[0]) < 2, `${fps} fps ${frames} frames: first ${yavg[0]} last ${yavg[frames - 1]}`);
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
