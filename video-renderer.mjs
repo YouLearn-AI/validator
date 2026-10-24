@@ -2,12 +2,21 @@
 //
 // Filmed like the research harness (docs/research/product/2026-10-22-i609-og-video, record.mjs and encode.sh in
 // the youlearn hub): a 1200x630 viewport, Playwright's fake clock paused so that every frame is exactly 1/30 s
-// of page time after the one before, whatever the screenshot costs. CSS animations and transitions are not
-// driven by that clock: their timeline is held still (CDP Animation.setPlaybackRate 0) and each step moves the
-// Web Animations on by the same 1/30 s. The page is shown as loaded, then the first control is used (the I-610 rule: a button whose label
+// of page time after the one before (1/15 or 1/10 s for a page too slow to film at 30), whatever the screenshot
+// costs. CSS animations and transitions are not driven by that clock: their timeline is held still (CDP
+// Animation.setPlaybackRate 0) and each step moves the Web Animations on by the same page time. The page is
+// shown as loaded, then the first control is used (the I-610 rule: a button whose label
 // says play/start/launch/..., else the first slider, else the first button, else the largest canvas or svg),
 // then the clip runs on. A motion check drops a clip whose frames don't change. The last 0.3 s fade back into
 // frame 0, so the clip loops without a jump. H.264 High, yuv420p, faststart, no audio: what iMessage plays.
+//
+// The clock moves with fastForward, which fires each timer that falls due at most once per step, so a page draws
+// once per filmed frame (runFor fires every 16 ms animation frame on the way: a WebGL scene drawn in software took
+// ~280 ms a draw and 94 draws for the settle alone, ops I-609). Pages that animate by page time (the frame's
+// timestamp, performance.now, Date) are where they would be; a page that moves a fixed step per animation frame
+// moves one step per filmed frame. When the first frames show the clip can't be filmed by the deadline, it drops to
+// 15 or 10 frames a second, then gets shorter; when even the shortest clip can't be filmed, the answer is the
+// first frame and reason "too_slow", a final answer like "no_motion".
 //
 // The page runs in the GuardedBrowser (guarded-browser.mjs): the sandbox on and every request through the
 // egress guard. Its URL must be public http(s) (checkUrl). One render at a time per instance; a hard deadline
@@ -24,6 +33,16 @@ export const VIDEO_DEFAULTS = Object.freeze({
   width: 1200,
   height: 630,
   fps: 30,
+  // The slower frame rates a clip may drop to when the page draws too slowly to film every frame by the deadline;
+  // each divides fps, so the frames already filmed hold every frame of the slower clip.
+  slowerFps: [15, 10],
+  // The shortest clip worth sending, once the slowest frame rate can't film the whole clip either.
+  minSeconds: 2.0,
+  // Frames filmed and timed before the frame rate may drop.
+  probeFrames: 3,
+  // Kept from the deadline for what follows the filming: closing the page, the motion check and the encode
+  // (about 5 s for 120 frames on Cloud Run's 2 vCPU, ops I-609).
+  reserveMs: 10_000,
   beforeSeconds: 0.4, // the page as loaded
   afterSeconds: 3.6, // after the interaction; the clip is before + after = 4.0 s
   fadeSeconds: 0.3, // the tail fades into frame 0
@@ -151,6 +170,34 @@ export function sanitizeTarget(raw, width, height) {
   return { kind: raw.kind, x: Math.min(Math.max(x, 0), width - 1), y: Math.min(Math.max(y, 0), height - 1) };
 }
 
+/**
+ * What is left to film, so that the filming ends in the time it has (ops I-609). Frames sit on a grid of ticks of
+ * 1/fps s; a clip at `stride` is every stride-th tick of [0, end). `next` is the first tick not filmed yet,
+ * `frameMs` the cost of one more frame (its screenshot and its step of the clock), `msLeft` the time left to film.
+ * The whole clip at the fastest frame rate that can film it in time; else the clip cut to the frames that fit, at
+ * the fastest frame rate that still gives `minTicks`; else null (too slow). Only a stride that is a multiple of
+ * the current one can be taken: the frames filmed so far must hold every tick of the slower grid.
+ * @param {{ next: number, stride: number, end: number, frameMs: number|null, msLeft: number }} now
+ * @param {{ strides: number[], minTicks: number }} limits
+ * @returns {{ stride: number, end: number } | null}
+ */
+export function fitCapture({ next, stride, end, frameMs, msLeft }, { strides, minTicks }) {
+  const options = strides.filter((s) => s >= stride && s % stride === 0).sort((x, y) => x - y);
+  const first = (s) => Math.ceil(next / s) * s; // the first tick still to film on the grid of stride s
+  const fit = frameMs > 0 ? Math.max(0, Math.floor(msLeft / frameMs)) : Infinity; // frames that fit
+  for (const s of options) {
+    const last = Math.floor(end / s) * s;
+    if (first(s) + fit * s >= last) return { stride: s, end: last };
+  }
+  for (const s of options) {
+    const last = Math.min(Math.floor(end / s) * s, first(s) + fit * s);
+    if (last >= minTicks) return { stride: s, end: last };
+  }
+  return null;
+}
+
+const mean = (values) => values.reduce((a, b) => a + b, 0) / values.length;
+
 function run(command, args, { signal } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -183,28 +230,28 @@ async function motionOf(ffmpeg, dir, fps, signal) {
   return [...out.matchAll(/lavfi\.signalstats\.YDIF=([0-9.]+)/g)].map((m) => Number(m[1]));
 }
 
-async function encodeLoop(ffmpeg, dir, frames, o, signal) {
+async function encodeLoop(ffmpeg, dir, frames, fps, o, signal) {
   // The fade ends exactly on the last frame, which is then frame 0 itself, so the loop wraps from frame 0 to
-  // frame 0 (a 1/30 s hold) with nothing of the end left in it. The fading-in input needs one frame past the
+  // frame 0 (a one-frame hold) with nothing of the end left in it. The fading-in input needs one frame past the
   // fade for xfade to reach it.
-  const offset = ((frames - 1) / o.fps - o.fadeSeconds).toFixed(4);
-  const tail = (o.fadeSeconds + 1 / o.fps).toFixed(4);
+  const offset = ((frames - 1) / fps - o.fadeSeconds).toFixed(4);
+  const tail = (o.fadeSeconds + 1 / fps).toFixed(4);
   const out = path.join(dir, 'clip.mp4');
   const graph = [
     // JPEG frames are full range; players expect the limited range of yuv420p (else the clip is yuvj420p).
-    `[0:v]scale=in_range=pc:out_range=tv,settb=1/${o.fps},format=yuv444p[a]`,
-    `[1:v]scale=in_range=pc:out_range=tv,settb=1/${o.fps},format=yuv444p,trim=duration=${tail}[b]`,
+    `[0:v]scale=in_range=pc:out_range=tv,settb=1/${fps},format=yuv444p[a]`,
+    `[1:v]scale=in_range=pc:out_range=tv,settb=1/${fps},format=yuv444p,trim=duration=${tail}[b]`,
     `[a][b]xfade=transition=fade:duration=${o.fadeSeconds}:offset=${offset},format=yuv420p[v]`,
   ].join(';');
   await run(ffmpeg, [
     '-hide_banner', '-loglevel', 'error', '-y',
-    '-framerate', String(o.fps), '-i', path.join(dir, 'f%04d.jpg'),
-    '-loop', '1', '-framerate', String(o.fps), '-i', path.join(dir, 'f0000.jpg'),
+    '-framerate', String(fps), '-i', path.join(dir, 'f%04d.jpg'),
+    '-loop', '1', '-framerate', String(fps), '-i', path.join(dir, 'f0000.jpg'),
     '-filter_complex', graph, '-map', '[v]', '-frames:v', String(frames),
     '-c:v', 'libx264', '-profile:v', 'high', '-preset', o.preset, '-crf', String(o.crf), '-tune', 'animation',
     // A ceiling for pages full of noise: 4 s at 4 Mbit/s is about 2 MB, under iMessage's 10 MB.
     '-maxrate', o.maxrate, '-bufsize', o.bufsize,
-    '-r', String(o.fps), '-movflags', '+faststart', '-an', out,
+    '-r', String(fps), '-movflags', '+faststart', '-an', out,
   ], { signal });
   return fs.readFile(out);
 }
@@ -261,7 +308,15 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     };
   }
 
-  async function film(url, signal, scope, files, frames, progress) {
+  // Frames are filmed on a grid of ticks of 1/fps s; a slower clip films every stride-th tick.
+  const strides = [o.fps, ...o.slowerFps].map((f) => o.fps / f);
+  if (!strides.every((s) => Number.isInteger(s) && s >= 1)) throw new Error('Each slower fps must divide fps');
+  const SLIDER_STEPS = 12;
+  const SLIDER_EVERY_TICKS = 3;
+  const tickName = (tick) => `t${String(tick).padStart(4, '0')}.jpg`;
+  const frameName = (i) => `f${String(i).padStart(4, '0')}.jpg`;
+
+  async function film(url, signal, scope, files, frames, progress, deadlineAt) {
     const t0 = Date.now();
     progress.stage = 'check_url';
     await checkUrl(url, { log, ...checkOptions });
@@ -280,7 +335,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     await cdp.send('Animation.enable');
     await cdp.send('Animation.setPlaybackRate', { playbackRate: 0 });
     // The page's clock is paused before its first script runs, so timers and requestAnimationFrame move only
-    // with runFor: however long the load takes, frame 0 is the same page time after it.
+    // with fastForward: however long the load takes, frame 0 is the same page time after it.
     const epoch = o.epochMs ?? Math.floor(Date.now() / 1000) * 1000;
     await page.clock.install({ time: epoch });
     // A whole second ahead, so the paused time doesn't depend on how long install took.
@@ -290,21 +345,35 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     progress.stage = 'settle';
     await page.evaluate(() => document.fonts && document.fonts.ready);
     scope.check();
+    // Whole milliseconds throughout: fastForward drops the fraction (Playwright 1.64 takes `ticks | 0`), and the
+    // Web Animations move by the same amount, so the two clocks stay together.
+    let pageMs = Math.round(o.settleMs);
     await page.evaluate(stepAnimations, 0);
-    await page.clock.runFor(o.settleMs);
-    await page.evaluate(stepAnimations, o.settleMs);
+    await page.clock.fastForward(pageMs);
+    await page.evaluate(stepAnimations, pageMs);
+    const settledMs = pageMs;
 
-    const step = 1000 / o.fps;
     const before = Math.round(o.beforeSeconds * o.fps);
-    const total = before + Math.round(o.afterSeconds * o.fps);
+    const minTicks = Math.round(o.minSeconds * o.fps);
+    const captureUntil = deadlineAt - o.reserveMs;
+    let plan = { stride: 1, end: before + Math.round(o.afterSeconds * o.fps) };
+    const filmed = [];
+    const shotMs = [];
+    const stepMs = [];
+    const recent = (values) => values.slice(-o.probeFrames);
+    let frameMs = null;
     let frame0Jpeg = null;
     let actionKind = 'none';
     let target = null;
+    let picked = false;
+    let pressed = 0;
+    let tooSlow = false;
     progress.stage = 'capture';
-    for (let i = 0; i < total; i += 1) {
+    for (let tick = 0; tick < plan.end;) {
       scope.check();
-      progress.frame = i;
-      if (i === before) {
+      progress.frame = tick;
+      if (!picked && tick >= before) {
+        picked = true;
         // What the page returns is the page's: only a known kind and a point inside the viewport are used.
         target = sanitizeTarget(await page.evaluate(pickControl, PREFER.source), o.width, o.height);
         if (target) {
@@ -312,35 +381,77 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
           actionKind = target.kind;
         }
       }
-      // A slider moves one step every 3 frames for the first 1.2 s (12 steps), as the I-610 harness moved it.
-      if (target?.kind === 'range' && i >= before && i < before + 36 && (i - before) % 3 === 0) {
-        await page.keyboard.press('ArrowRight');
+      // A slider moves one step every 3 ticks (0.1 s) for the first 1.2 s (12 steps), as the I-610 harness moved
+      // it: the steps due by this frame's page time, however many ticks the last frame step covered.
+      if (target?.kind === 'range') {
+        const due = Math.min(SLIDER_STEPS, Math.floor((tick - before) / SLIDER_EVERY_TICKS) + 1);
+        for (; pressed < due; pressed += 1) await page.keyboard.press('ArrowRight');
       }
       // To a buffer, then into the existing directory without creating it: a write that lands after cleanup
       // fails instead of bringing the directory back (Playwright's own path option makes the directory).
+      const tShot = Date.now();
       const shot = await page.screenshot({ type: 'jpeg', quality: o.frameQuality });
       scope.check();
-      await fs.writeFile(path.join(dir, `f${String(i).padStart(4, '0')}.jpg`), shot);
-      if (i === 0) frame0Jpeg = await page.screenshot({ type: 'jpeg', quality: o.jpegQuality });
-      await page.clock.runFor(step);
-      await page.evaluate(stepAnimations, step);
+      await fs.writeFile(path.join(dir, tickName(tick)), shot);
+      shotMs.push(Date.now() - tShot);
+      filmed.push(tick);
+      if (tick === 0) frame0Jpeg = await page.screenshot({ type: 'jpeg', quality: o.jpegQuality });
+
+      // The time budget: once the first frames are timed, what is left must be filmed by the deadline less what
+      // the encode needs; else a slower or shorter clip, or none.
+      if (filmed.length >= o.probeFrames && stepMs.length > 0) {
+        frameMs = mean(recent(shotMs)) + mean(recent(stepMs));
+        const fitted = fitCapture(
+          { next: tick + 1, stride: plan.stride, end: plan.end, frameMs, msLeft: captureUntil - Date.now() },
+          { strides, minTicks },
+        );
+        if (!fitted) {
+          tooSlow = true;
+          break;
+        }
+        plan = fitted;
+      }
+      const next = Math.ceil((tick + 1) / plan.stride) * plan.stride;
+      if (next >= plan.end) break;
+      const tStep = Date.now();
+      const targetMs = settledMs + Math.round((next * 1000) / o.fps);
+      await page.clock.fastForward(targetMs - pageMs);
+      await page.evaluate(stepAnimations, targetMs - pageMs);
+      pageMs = targetMs;
+      stepMs.push(Date.now() - tStep);
+      tick = next;
     }
     const captureMs = Date.now() - t0;
     await context.close().catch(() => {});
 
+    const fps = o.fps / plan.stride;
+    // actionKind (button, range, canvas/svg, none) is the only trace of the control: its label is page text.
+    const base = {
+      url_host: new URL(url).host, fps, actionKind, captureMs, frameMs: frameMs === null ? null : Math.round(frameMs),
+    };
+    if (tooSlow) {
+      const meta = { ...base, frames: filmed.length, seconds: 0, motion: null, totalMs: Date.now() - t0 };
+      return { video: null, frame: frame0Jpeg, reason: 'too_slow', meta };
+    }
+    // The frames of the clip, in order, as ffmpeg reads them (f0000.jpg, f0001.jpg, ...).
+    const kept = filmed.filter((tick) => tick % plan.stride === 0 && tick < plan.end);
+    if (kept.length !== plan.end / plan.stride) throw new Error('A frame of the clip was not filmed');
+    for (const [i, tick] of kept.entries()) {
+      await fs.rename(path.join(dir, tickName(tick)), path.join(dir, frameName(i)));
+    }
+
     progress.stage = 'motion';
-    const ydif = await motionOf(ffmpeg, dir, o.fps, signal);
+    const ydif = await motionOf(ffmpeg, dir, fps, signal);
     const movingFrames = ydif.filter((v) => v > o.motionThreshold).length;
     const motion = { maxYdif: Math.max(0, ...ydif), movingFrames, threshold: o.motionThreshold };
-    // actionKind (button, range, canvas/svg, none) is the only trace of the control: its label is page text.
-    const meta = { url_host: new URL(url).host, frames: total, fps: o.fps, seconds: total / o.fps, actionKind, motion, captureMs };
+    const meta = { ...base, frames: kept.length, seconds: kept.length / fps, motion };
     if (movingFrames < o.minMovingFrames) {
       return { video: null, frame: frame0Jpeg, reason: 'no_motion', meta: { ...meta, totalMs: Date.now() - t0 } };
     }
     scope.check();
     const tEncode = Date.now();
     progress.stage = 'encode';
-    const video = await encodeLoop(ffmpeg, dir, total, o, signal);
+    const video = await encodeLoop(ffmpeg, dir, kept.length, fps, o, signal);
     const done = { ...meta, encodeMs: Date.now() - tEncode, totalMs: Date.now() - t0, bytes: video.length };
     if (video.length > o.maxBytes) return { video: null, frame: frame0Jpeg, reason: 'too_large', meta: done };
     return { video, frame: frame0Jpeg, reason: null, meta: done };
@@ -348,7 +459,8 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
 
   /**
    * Film `url`. Resolves { video: Buffer|null, frame: Buffer, reason, meta }; video is null when nothing moved
-   * ("no_motion") or the clip came out too large ("too_large").
+   * ("no_motion"), the clip came out too large ("too_large") or the page draws too slowly to film even the
+   * shortest clip at the slowest frame rate by the deadline ("too_slow").
    * @throws {UrlRefused} the URL is not a public http(s) address
    * @throws {RenderBusy} another render is running here
    * @throws {RenderTimeout} the render passed the deadline (the lookup and the cleanup count)
@@ -364,10 +476,11 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       controller.signal.addEventListener('abort', () => reject(new RenderTimeout(o.deadlineMs)), { once: true });
     });
     stopped.catch(() => {});
+    const deadlineAt = Date.now() + o.deadlineMs;
     const timer = setTimeout(() => controller.abort(), o.deadlineMs);
     const frames = { dir: null };
     const progress = { stage: 'start' };
-    const filming = film(String(url || '').trim(), controller.signal, scope, files, frames, progress);
+    const filming = film(String(url || '').trim(), controller.signal, scope, files, frames, progress, deadlineAt);
     const settled = filming.then(() => {}, () => {});
     try {
       let result;
@@ -383,9 +496,11 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
         // Anything else leaves only its stage and code: its message can quote the URL or the page.
         throw new RenderFailed(progress.stage, errorCode(error));
       }
-      log.info(`[RENDER_VIDEO] host=${result.meta.url_host} video=${Boolean(result.video)} reason=${result.reason || '-'} `
-        + `action=${result.meta.actionKind} max_ydif=${result.meta.motion.maxYdif.toFixed(2)} `
-        + `moving=${result.meta.motion.movingFrames} ms=${result.meta.totalMs} bytes=${result.meta.bytes || 0}`);
+      const { meta } = result;
+      log.info(`[RENDER_VIDEO] host=${meta.url_host} video=${Boolean(result.video)} reason=${result.reason || '-'} `
+        + `action=${meta.actionKind} max_ydif=${meta.motion ? meta.motion.maxYdif.toFixed(2) : '-'} `
+        + `moving=${meta.motion ? meta.motion.movingFrames : '-'} fps=${meta.fps} frames=${meta.frames} `
+        + `frame_ms=${meta.frameMs ?? '-'} ms=${meta.totalMs} bytes=${meta.bytes || 0}`);
       return result;
     } finally {
       clearTimeout(timer);
