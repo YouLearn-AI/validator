@@ -52,8 +52,9 @@ export const VIDEO_DEFAULTS = Object.freeze({
   // animations need it: at 1500 ms frame 0 matched the share thumbnail on the I-610 set (SSIM 0.990-1.000;
   // at 500 ms one page was still fading in, SSIM 0.80).
   settleMs: 1500,
-  // Real time the settle may take frame by frame; past it the rest of the settle is one fastForward, and the
-  // frames are stepped that way too. A canvas page settles in about 0.5 s on a Mac, 1.5 s on Cloud Run.
+  // Real time the settle may take frame by frame; a page that would take longer jumps the rest of the settle with
+  // one fastForward, and its frames are stepped that way too. A canvas page settles in 0.5-1.3 s on a Mac.
+  // (Three runFor frames of a three.js page took 22 s on a loaded Mac, one fastForward 1.5 s, ops I-609.)
   settleBudgetMs: 3000,
   crf: 24,
   preset: 'medium',
@@ -322,7 +323,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
   // The cost of a frame is the mean of the last few: one draw's work can land in its step or in the next
   // screenshot (WebGL draws asynchronously), so one frame alone says little.
   const COST_FRAMES = 10;
-  const SETTLE_SLICE_MS = 50;
+  const SETTLE_FIRST_SLICE_MS = 32;
   const SLIDER_STEPS = 12;
   const SLIDER_EVERY_TICKS = 3;
   const tickName = (tick) => `t${String(tick).padStart(4, '0')}.jpg`;
@@ -365,13 +366,17 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     let pageMs = 0;
     const tSettle = Date.now();
     await page.evaluate(stepAnimations, 0);
-    while (pageMs < settledMs) {
+    // Slices that double from two animation frames, so the first one, one or two draws, already tells a slow page:
+    // frame by frame only while the whole settle, at the rate so far, stays within its budget.
+    for (let slice = SETTLE_FIRST_SLICE_MS; pageMs < settledMs; slice *= 2) {
       scope.check();
-      const ms = everyFrame ? Math.min(SETTLE_SLICE_MS, settledMs - pageMs) : settledMs - pageMs;
+      const spent = Date.now() - tSettle;
+      if (pageMs > 0 && spent + (spent / pageMs) * (settledMs - pageMs) > o.settleBudgetMs) everyFrame = false;
+      const ms = everyFrame ? Math.min(slice, settledMs - pageMs) : settledMs - pageMs;
       await advance(ms);
       pageMs += ms;
-      if (Date.now() - tSettle > o.settleBudgetMs) everyFrame = false;
     }
+    if (Date.now() - tSettle > o.settleBudgetMs) everyFrame = false;
     await page.evaluate(stepAnimations, settledMs);
 
     const before = Math.round(o.beforeSeconds * o.fps);

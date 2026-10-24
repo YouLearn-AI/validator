@@ -629,8 +629,9 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
 
   test('a page too slow for 30 fps is filmed slower: the whole 4 s clip, one fastForward per frame, in whole ms', async () => {
     const browser = fakeBrowser({ screenshotDelayMs: 25, stepDelayMs: 25, images: await frameImages() });
+    // The settle's own budget is out of the way here (its timing has its own test).
     const render = createVideoRenderer(browser, {
-      checkOptions: { lookup: publicLookup }, options: { deadlineMs: 6000, reserveMs: 1500 }, log: silent,
+      checkOptions: { lookup: publicLookup }, options: { deadlineMs: 6000, reserveMs: 1500, settleBudgetMs: 10_000 }, log: silent,
     });
     // ~50 ms a frame: 117 frames left at 30 fps need ~6 s, the 58 left at 15 fps ~3 s; the budget is ~4.5 s.
     // (15 fps on a quiet machine; 10 fps is right too when its timers fire late.)
@@ -641,10 +642,11 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     assert.equal(result.meta.seconds, 4);
     const { steps } = browser.state;
     assert.ok(steps.every(([, ms]) => Number.isInteger(ms) && ms > 0), JSON.stringify(steps));
-    // The settle frame by frame (30 slices of 50 ms take 0.75 s, under its 3 s), the first three frames too;
-    // once the clip drops, one fastForward per frame.
-    assert.deepEqual(steps.slice(0, 32).map(([kind]) => kind), Array(32).fill('runFor'));
-    assert.ok(steps.length > 32 && steps.slice(32).every(([kind]) => kind === 'fastForward'), JSON.stringify(steps.slice(32, 36)));
+    // The settle frame by frame (slices of 32, 64, ... ms), the first three frames too; once the clip drops, one
+    // fastForward per frame.
+    assert.deepEqual(steps.slice(0, 6), [['runFor', 32], ['runFor', 64], ['runFor', 128], ['runFor', 256], ['runFor', 512], ['runFor', 508]]);
+    assert.deepEqual(steps.slice(6, 8).map(([kind]) => kind), ['runFor', 'runFor']);
+    assert.ok(steps.length > 8 && steps.slice(8).every(([kind]) => kind === 'fastForward'), JSON.stringify(steps.slice(8, 12)));
     // The last frame (tick 118 at 15 fps, 117 at 10) is exactly that page time after load, to the millisecond.
     const lastTick = 120 - 30 / result.meta.fps;
     assert.equal(steps.reduce((sum, [, ms]) => sum + ms, 0), 1500 + Math.round((lastTick * 1000) / 30));
@@ -657,8 +659,9 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     });
     await render({ url: 'http://public.test/' });
     const { steps } = browser.state;
-    assert.deepEqual(steps.slice(0, 4), [['runFor', 50], ['runFor', 50], ['fastForward', 1400], ['fastForward', 33]]);
-    assert.ok(steps.slice(2).every(([kind]) => kind === 'fastForward'));
+    // Its first slice, two animation frames, costs 60 ms: the whole settle at that rate would take 2.8 s.
+    assert.deepEqual(steps.slice(0, 3), [['runFor', 32], ['fastForward', 1468], ['fastForward', 33]]);
+    assert.ok(steps.slice(1).every(([kind]) => kind === 'fastForward'));
   });
 
   test('a page too slow even for 2 s at 10 fps answers 200 "too_slow" with its first frame, well before the deadline', async () => {
