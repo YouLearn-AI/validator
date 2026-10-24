@@ -24,7 +24,9 @@
 // after the route's check.
 //
 // A refusal is logged once as [EGRESS_REFUSED] reason=<reason> host=<host>; the
-// line names the host only, never the URL, whose query can carry tokens.
+// line names the host only, never the URL, whose query can carry tokens. With
+// logHosts false (the layout checker, whose pages are model-written HTML that
+// can put its text in a hostname) the host is left out too: host=-.
 
 import dns from 'node:dns/promises';
 import http from 'node:http';
@@ -73,8 +75,8 @@ export class DnsUnavailable extends Error {
   }
 }
 
-function refuse(reason, host, log) {
-  log.warn(`[EGRESS_REFUSED] reason=${reason} host=${host || '-'}`);
+function refuse(reason, host, log, logHost = true) {
+  log.warn(`[EGRESS_REFUSED] reason=${reason} host=${(logHost && host) || '-'}`);
   return new UrlRefused(reason, host);
 }
 
@@ -115,26 +117,26 @@ async function defaultLookup(host) {
  * `host`'s addresses when every one of them is public; otherwise throws
  * UrlRefused (or DnsUnavailable when the resolver did not answer).
  * @param {string} host
- * @param {{ lookup?: (host: string) => Promise<{address: string, family: number}[]>, log?: Console }} [options]
+ * @param {{ lookup?: (host: string) => Promise<{address: string, family: number}[]>, log?: Console, logHosts?: boolean }} [options]
  * @returns {Promise<string[]>}
  */
-export async function publicAddresses(host, { lookup = defaultLookup, log = console } = {}) {
+export async function publicAddresses(host, { lookup = defaultLookup, log = console, logHosts = true } = {}) {
   const bare = String(host || '').replace(/^\[|\]$/g, '');
-  if (!bare) throw refuse('malformed', host, log);
+  if (!bare) throw refuse('malformed', host, log, logHosts);
   const nameReason = nameRefusal(bare);
-  if (nameReason) throw refuse(nameReason, bare, log);
+  if (nameReason) throw refuse(nameReason, bare, log, logHosts);
   let records;
   try {
     records = await lookup(bare);
   } catch (error) {
-    if (NO_ADDRESS_CODES.has(error?.code)) throw refuse('unresolvable', bare, log);
+    if (NO_ADDRESS_CODES.has(error?.code)) throw refuse('unresolvable', bare, log, logHosts);
     throw new DnsUnavailable(bare, error);
   }
   const addresses = [...new Set((records || []).map((r) => r.address))];
-  if (addresses.length === 0) throw refuse('unresolvable', bare, log);
+  if (addresses.length === 0) throw refuse('unresolvable', bare, log, logHosts);
   for (const address of addresses) {
     const reason = addressRefusal(address);
-    if (reason) throw refuse(reason, bare, log);
+    if (reason) throw refuse(reason, bare, log, logHosts);
   }
   return addresses;
 }
@@ -145,16 +147,16 @@ export async function publicAddresses(host, { lookup = defaultLookup, log = cons
  * refused before anything opens them.
  * @returns {URL}
  */
-export function checkRequestUrl(url, { log = console } = {}) {
+export function checkRequestUrl(url, { log = console, logHosts = true } = {}) {
   let parsed;
   try {
     parsed = new URL(String(url).trim());
   } catch {
     throw refuse('malformed', '', log);
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw refuse('scheme', parsed.hostname, log);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw refuse('scheme', parsed.hostname, log, logHosts);
   if (!parsed.hostname) throw refuse('malformed', '', log);
-  if (parsed.username || parsed.password) throw refuse('credentials', parsed.hostname, log);
+  if (parsed.username || parsed.password) throw refuse('credentials', parsed.hostname, log, logHosts);
   return parsed;
 }
 
@@ -183,8 +185,8 @@ function pinnedLookup(addresses) {
 // Connect to one of the checked addresses (Node tries each in turn, both
 // families, as Chromium would), then check the address the socket reached
 // before any byte is sent.
-async function connectChecked(host, port, { lookup, connect, log }) {
-  const addresses = await publicAddresses(host, { lookup, log });
+async function connectChecked(host, port, { lookup, connect, log, logHosts }) {
+  const addresses = await publicAddresses(host, { lookup, log, logHosts });
   const socket = connect({
     host: net.isIP(host) ? host : host.replace(/^\[|\]$/g, ''),
     port,
@@ -209,7 +211,7 @@ async function connectChecked(host, port, { lookup, connect, log }) {
   const reason = peer === undefined ? 'no_peer' : addressRefusal(peer);
   if (reason) {
     socket.destroy();
-    throw refuse(reason, host, log);
+    throw refuse(reason, host, log, logHosts);
   }
   socket.setTimeout(PROXY_SOCKET_IDLE_MS, () => socket.destroy());
   return socket;
@@ -235,11 +237,14 @@ function statusFor(error) {
  * Start the egress proxy on 127.0.0.1 (a free port). Chromium sends it
  * absolute-form requests for http:// and CONNECT for https:// and WebSockets.
  * `lookup` and `connect` exist for tests (a fake public name, a local server);
- * production uses the system resolver and net.connect.
+ * production uses the system resolver and net.connect. `logHosts` false leaves
+ * the host out of every refusal line.
  * @returns {Promise<{ server: http.Server, url: string, port: number, refusals: () => number, close: () => Promise<void> }>}
  */
-export async function startEgressProxy({ lookup = defaultLookup, connect = defaultConnect, log = console } = {}) {
-  const deps = { lookup, connect, log };
+export async function startEgressProxy({
+  lookup = defaultLookup, connect = defaultConnect, log = console, logHosts = true,
+} = {}) {
+  const deps = { lookup, connect, log, logHosts };
   let refusals = 0;
   const counted = (error) => {
     if (error instanceof UrlRefused) refusals += 1;
@@ -262,7 +267,7 @@ export async function startEgressProxy({ lookup = defaultLookup, connect = defau
       return;
     }
     if (target.protocol !== 'http:') {
-      counted(refuse('scheme', target.hostname, log));
+      counted(refuse('scheme', target.hostname, log, logHosts));
       res.writeHead(403).end();
       return;
     }

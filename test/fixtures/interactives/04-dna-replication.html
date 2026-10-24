@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Replication Fork</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Figtree:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg1:#0b1620;--bg2:#13283a;--panel:#0e1e2cdd;--ink:#e6eef5;--mut:#8fa6b8;--line:#2a4358;
+  --lead:#35e0b4;--lag:#ff9a3c;--tmpl:#6aa7ff;--tmpl2:#c58bff;--acc:#ffd84a;
+}
+@media (prefers-color-scheme:light){
+  :root{--bg1:#eaf1f4;--bg2:#cfdde6;--panel:#f6fafcdd;--ink:#14293a;--mut:#4d6679;--line:#a9bfcc;
+  --lead:#00a37c;--lag:#d96a00;--tmpl:#2a63c9;--tmpl2:#8a3fd1;--acc:#b58a00;}
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:radial-gradient(120% 100% at 50% 0%,var(--bg2),var(--bg1));color:var(--ink);font-family:'Figtree',sans-serif;overflow:hidden}
+#wrap{display:flex;flex-direction:column;height:100%}
+#stage{position:relative;flex:1;min-height:0}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+#tip{position:absolute;pointer-events:none;background:var(--panel);border:1px solid var(--line);padding:8px 11px;border-radius:8px;font-size:13px;max-width:240px;line-height:1.35;opacity:0;transition:opacity .15s;backdrop-filter:blur(6px);box-shadow:0 8px 24px #0006}
+#info{position:absolute;left:14px;top:12px;right:14px;display:flex;gap:10px;flex-wrap:wrap;pointer-events:none}
+.chip{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:7px 12px;font-size:13px;backdrop-filter:blur(6px)}
+.chip b{font-family:'Fraunces',serif;font-weight:700}
+#msg{flex:1 1 320px;min-width:200px}
+#ctrl{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:10px 16px;background:var(--panel);border-top:1px solid var(--line)}
+button{font:600 13px 'Figtree',sans-serif;color:var(--ink);background:linear-gradient(#1d3a52,#142b3e);border:1px solid var(--line);border-radius:8px;padding:8px 14px;cursor:pointer}
+@media (prefers-color-scheme:light){button{background:linear-gradient(#fff,#dce8ef)}}
+button:hover{border-color:var(--acc)}button:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button[aria-pressed=true]{border-color:var(--acc);color:var(--acc)}
+label{font-size:13px;color:var(--mut);display:flex;align-items:center;gap:8px}
+input[type=range]{accent-color:var(--acc);width:120px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px}
+</style>
+</head>
+<body>
+<div id="wrap">
+<div id="stage">
+<canvas id="c" role="img" aria-label="Animated replication fork showing leading and lagging strand synthesis"></canvas>
+<div id="info"><div class="chip" id="msg"></div></div>
+<div id="tip"></div>
+</div>
+<div id="ctrl">
+<button id="play" aria-label="Play or pause">⏸ Pause</button>
+<button id="step" aria-label="Advance one step">Step ▸</button>
+<button id="reset" aria-label="Reset simulation">↺ Reset</button>
+<label>Speed <input type="range" id="spd" min="0.3" max="3" step="0.1" value="1" aria-label="Speed"></label>
+<button id="tglDir" aria-pressed="true" aria-label="Toggle direction labels">5′/3′ labels</button>
+<button id="tglSeq" aria-pressed="true" aria-label="Toggle base pair letters">Bases</button>
+<button id="tglQuiz" aria-pressed="false" aria-label="Hide labels for self test">Self-test</button>
+<span class="chip"><span class="sw" style="background:var(--lead)"></span>Leading &nbsp;<span class="sw" style="background:var(--lag)"></span>Lagging</span>
+</div>
+</div>
+<script>
+(function(){
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const tip=document.getElementById('tip'),msg=document.getElementById('msg');
+let W=0,H=0,DPR=1;
+function resize(){DPR=Math.min(2,window.devicePixelRatio||1);const r=cv.getBoundingClientRect();W=r.width;H=r.height;cv.width=W*DPR;cv.height=H*DPR;ctx.setTransform(DPR,0,0,DPR,0,0);}
+window.addEventListener('resize',resize);resize();
+const dark=()=>!matchMedia('(prefers-color-scheme: light)').matches;
+function css(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim();}
+
+/* Geometry: fork opens to the RIGHT? Convention: parental duplex on the left, fork moves left->right.
+   Template A (top, blue) runs 3'(at fork side, right)... we define:
+   Parental top strand: 3'(right,at fork)<-5'(left)?? Keep it simple and correct:
+   Top template: 3' end toward fork direction (right) => new strand complementary is 5'→3' moving RIGHT = leading.
+   Bottom template: 5' toward fork (right) => new strand must be made 5'→3' moving LEFT (away) = lagging. */
+const S={forkX:0,t:0,playing:true,speed:1,leadX:0,frags:[],prim:null,pol:null,ligQ:[],time:0,stepReq:0,seq:[]};
+const BASES='ATGCCATAGCTTAGGCATCGATTACGGCATA';
+const comp={A:'T',T:'A',G:'C',C:'G'};
+let showDir=true,showSeq=true,quiz=false;
+const FR=120; // Okazaki fragment length px (scaled)
+function layout(){
+  L.x0=40;L.x1=W-40;L.cy=H*0.54;L.gapOpen=Math.min(130,H*0.2);L.gapClosed=26;
+}
+const L={};layout();
+function reset(){
+  layout();
+  S.forkX=L.x0+(L.x1-L.x0)*0.32;S.startFork=S.forkX;
+  S.leadX=S.forkX;S.leadFrom=S.forkX;
+  S.frags=[];S.prim=null;S.pol=null;S.ligQ=[];S.time=0;S.seqOff=0;
+  S.lagState={phase:'idle',startX:S.forkX,x:S.forkX,prog:0};
+  S.msgKey='';
+}
+reset();
+window.addEventListener('resize',()=>{resize();reset();});
+
+function baseAt(i){return BASES[((i%BASES.length)+BASES.length)%BASES.length];}
+const SP=17; // base spacing
+function gapAt(x){ // half-separation of the two strands at x
+  const d=S.forkX-x; // distance behind fork (left of fork = daughter side? ) 
+  // Parental duplex lies to the LEFT?? Fork moves right so unzipped region is to RIGHT of... 
+  return 0;}
+/* Layout decision: parental duplex on the RIGHT (not yet unwound), fork moving to the right is toward it.
+   Daughter duplexes on the LEFT, behind the fork. Strands diverge LEFT of fork. */
+function sep(x){ // half distance from centre line
+  const dx=S.forkX-x;
+  if(dx<=0)return L.gapClosed/2; // ahead of fork: closed parental
+  const k=1-Math.exp(-dx/90);
+  return L.gapClosed/2+(L.gapOpen-L.gapClosed/2)*k;
+}
+function yTop(x){const dx=S.forkX-x;const s=sep(x);return L.cy-s;}
+function yBot(x){return L.cy+sep(x);}
+function helixY(x,strand,ph){ // twist only in closed region
+  const dx=S.forkX-x;
+  if(dx>0)return 0;
+  const a=(x*0.09+ph)+(strand?Math.PI:0);
+  return Math.sin(a)*8;
+}
+
+function drawBackdrop(){
+  const g=ctx.createRadialGradient(W/2,L.cy,20,W/2,L.cy,W*0.7);
+  g.addColorStop(0,dark()?'rgba(40,90,130,.25)':'rgba(255,255,255,.5)');g.addColorStop(1,'rgba(0,0,0,0)');
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  // floating particles (nucleoplasm)
+  for(let i=0;i<40;i++){const x=(i*173+S.time*6*(1+i%3))%W,y=(i*97)%H;
+    ctx.fillStyle=dark()?'rgba(150,200,255,.05)':'rgba(40,80,120,.05)';ctx.beginPath();ctx.arc(x,y,2+(i%4),0,6.3);ctx.fill();}
+}
+
+function ribbon(pts,col,w,glowCol){
+  ctx.save();ctx.lineCap='round';ctx.lineJoin='round';
+  ctx.beginPath();pts.forEach((p,i)=>i?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1]));
+  ctx.shadowColor='rgba(0,0,0,.55)';ctx.shadowBlur=8;ctx.shadowOffsetY=4;
+  ctx.strokeStyle=col;ctx.lineWidth=w;ctx.stroke();
+  ctx.shadowColor='transparent';
+  ctx.strokeStyle='rgba(255,255,255,.35)';ctx.lineWidth=w*0.3;ctx.translate(0,-w*0.22);ctx.stroke();
+  ctx.restore();
+}
+function path(x0,x1,fn){const a=[];for(let x=x0;x<=x1;x+=4)a.push([x,fn(x)]);return a;}
+
+function nuc(x,y,r,col,letter,dirY){
+  ctx.save();
+  const g=ctx.createRadialGradient(x-r*.3,y-r*.35,r*.1,x,y,r);
+  g.addColorStop(0,'#fff');g.addColorStop(.25,col);g.addColorStop(1,shade(col));
+  ctx.shadowColor='rgba(0,0,0,.5)';ctx.shadowBlur=5;ctx.shadowOffsetY=2;
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,r,0,6.3);ctx.fill();ctx.restore();
+  if(showSeq&&letter&&!quiz){ctx.fillStyle='#0a1520';ctx.font='700 '+Math.round(r*1.05)+'px Figtree';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(letter,x,y+1);}
+}
+function shade(c){const m=c.match(/#(..)(..)(..)/);if(!m)return c;const f=v=>Math.round(parseInt(v,16)*.45).toString(16).padStart(2,'0');return '#'+f(m[1])+f(m[2])+f(m[3]);}
+function hex(n){return css(n);}
+
+// Index base letters by x position
+function idx(x){return Math.round((x-L.x0)/SP);}
+function templateLetterTop(x){return baseAt(idx(x));}
+function templateLetterBot(x){return comp[baseAt(idx(x))];}
+
+const hits=[];
+function addHit(x,y,w,h,text){hits.push({x,y,w,h,text});}
+
+function arrow(x1,y1,x2,y2,col,lw){
+  ctx.save();ctx.strokeStyle=col;ctx.fillStyle=col;ctx.lineWidth=lw||2;
+  ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke();
+  const a=Math.atan2(y2-y1,x2-x1);ctx.beginPath();ctx.moveTo(x2,y2);
+  ctx.lineTo(x2-9*Math.cos(a-.4),y2-9*Math.sin(a-.4));ctx.lineTo(x2-9*Math.cos(a+.4),y2-9*Math.sin(a+.4));ctx.fill();ctx.restore();
+}
+function txt(t,x,y,col,size,al,font){ctx.fillStyle=col;ctx.font=(font||'600')+' '+(size||13)+'px Figtree';ctx.textAlign=al||'left';ctx.textBaseline='middle';ctx.fillText(t,x,y);}
+function endTag(t,x,y,col){ if(quiz){t='?';} ctx.save();ctx.fillStyle=col;ctx.globalAlpha=.95;
+  ctx.beginPath();ctx.roundRect(x-15,y-10,30,20,6);ctx.fill();ctx.fillStyle=dark()?'#06121c':'#fff';ctx.font='700 12px Figtree';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(t,x,y+.5);ctx.restore();}
+
+function helicase(x,y){
+  ctx.save();ctx.translate(x,y);
+  const g=ctx.createRadialGradient(-8,-10,4,0,0,44);
+  g.addColorStop(0,'#ff8f8f');g.addColorStop(.5,'#c2384a');g.addColorStop(1,'#5a1424');
+  ctx.shadowColor='rgba(0,0,0,.6)';ctx.shadowBlur=14;ctx.shadowOffsetY=6;
+  ctx.fillStyle=g;ctx.beginPath();
+  for(let i=0;i<=24;i++){const a=i/24*6.283,r=34+Math.sin(a*5+S.time*3)*2.5;ctx.lineTo(Math.cos(a)*r*1.0,Math.sin(a)*r*0.8);}
+  ctx.fill();ctx.shadowColor='transparent';
+  ctx.strokeStyle='rgba(255,255,255,.25)';ctx.lineWidth=2;ctx.beginPath();ctx.arc(-4,-6,20,3.4,5);ctx.stroke();
+  ctx.fillStyle='#fff';ctx.font='700 12px Figtree';ctx.textAlign='center';ctx.textBaseline='middle';
+  if(!quiz)ctx.fillText('Helicase',0,0);
+  ctx.restore();
+  addHit(x-36,y-30,72,60,'Helicase unwinds the parental double helix by breaking hydrogen bonds between base pairs. The fork advances to the right.');
+}
+function polymerase(x,y,col,label,dir){
+  ctx.save();ctx.translate(x,y);
+  const g=ctx.createRadialGradient(-10,-12,3,0,0,40);
+  g.addColorStop(0,'#fff');g.addColorStop(.2,col);g.addColorStop(1,shade(col));
+  ctx.shadowColor='rgba(0,0,0,.6)';ctx.shadowBlur=14;ctx.shadowOffsetY=6;
+  ctx.fillStyle=g;ctx.beginPath();ctx.ellipse(0,0,30,22,0,0,6.3);ctx.fill();
+  ctx.shadowColor='transparent';
+  ctx.fillStyle='rgba(0,0,0,.35)';ctx.beginPath();ctx.ellipse(dir*14,0,8,8,0,0,6.3);ctx.fill(); // active site
+  ctx.fillStyle=dark()?'#06121c':'#fff';ctx.font='700 11px Figtree';ctx.textAlign='center';ctx.textBaseline='middle';
+  if(!quiz)ctx.fillText('Pol III',-3*dir,0);
+  ctx.restore();
+  addHit(x-32,y-24,64,48,label);
+}
+
+/* ---- Simulation ----
+ Leading polymerase: continuously extends toward the fork (rightwards) on the top template, following helicase.
+ Lagging: primase lays primer near fork; polymerase extends LEFT (away from fork) until it hits previous fragment; then new primer closer to fork. */
+const leadStrand=[]; // nucleotides with x positions (just track leadX)
+function lagTick(dt){
+  const ls=S.lagState;
+  const sp=70*S.speed;
+  if(ls.phase==='idle'){
+    ls.phase='prime';ls.t=0;ls.startX=Math.max(L.x0+10,S.forkX-12);ls.x=ls.startX;
+  }else if(ls.phase==='prime'){
+    ls.t+=dt*S.speed;ls.x=ls.startX;
+    if(ls.t>0.9){ls.phase='extend';ls.t=0;}
+  }else if(ls.phase==='extend'){
+    ls.x-=sp*dt;
+    const limit=ls.limit!==undefined?ls.limit:L.x0;
+    // stop at previous fragment's start (the primer of the one to the left)
+    const prev=S.frags.length?S.frags[S.frags.length-1]:null;
+    const stopAt=prev?prev.startX+4:L.x0;
+    if(ls.x<=stopAt||S.forkX-ls.x>FR+SP*0){
+      ls.x=Math.max(ls.x,stopAt);
+      S.frags.push({startX:ls.startX,endX:ls.x,joined:false,ligT:0});
+      ls.phase='release';ls.t=0;
+    }
+  }else if(ls.phase==='release'){
+    ls.t+=dt*S.speed;
+    if(ls.t>0.7){ // polymerase "jumps" back toward fork; lagging loop
+      ls.phase='idle';
+    }
+  }
+}
+function ligTick(dt){
+  // join fragments: fragment i joins with i-1 if previous exists
+  for(let i=1;i<S.frags.length;i++){
+    const f=S.frags[i];
+    if(!f.joined){f.ligT+=dt*S.speed;if(f.ligT>1.4){f.joined=true;f.flash=1;}}
+  }
+  S.frags.forEach(f=>{if(f.flash)f.flash=Math.max(0,f.flash-dt*1.2);});
+}
+function tick(dt){
+  S.time+=dt;
+  const v=26*S.speed;
+  S.forkX+=v*dt;
+  if(S.forkX>L.x1-130){ // loop: scroll world
+    const shift=S.forkX-(S.startFork);
+    S.forkX=S.startFork;
+    // restart cleanly
+    S.frags=[];S.lagState={phase:'idle',startX:S.forkX,x:S.forkX,prog:0};S.leadFrom=S.forkX-1;
+  }
+  S.leadX=S.forkX-40;
+  lagTick(dt);ligTick(dt);
+}
+
+function draw(){
+  ctx.clearRect(0,0,W,H);hits.length=0;
+  drawBackdrop();
+  const tm=hex('--tmpl'),tm2=hex('--tmpl2'),ld=hex('--lead'),lg=hex('--lag'),ink=hex('--ink'),mut=hex('--mut');
+  const fx=S.forkX,x0=L.x0,x1=L.x1;
+  const ph=S.time*1.4;
+  // Parental duplex (right of fork): two twisting backbones + base pair rungs
+  const par=(strand)=>path(fx,x1,x=>L.cy+Math.sin((x*0.09)-ph*0+ (strand?Math.PI:0))*9);
+  // rungs
+  for(let x=fx+8;x<x1;x+=SP){
+    const a=Math.sin(x*0.09),b=-a;
+    const ya=L.cy+a*9,yb=L.cy+b*9;
+    const t=ctx.createLinearGradient(0,ya,0,yb);t.addColorStop(0,tm);t.addColorStop(1,tm2);
+    ctx.strokeStyle=dark()?'rgba(255,255,255,.28)':'rgba(0,0,0,.25)';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(x,ya);ctx.lineTo(x,yb);ctx.stroke();
+  }
+  ribbon(par(0),tm,7);ribbon(par(1),tm2,7);
+
+  // Template strands separated (left of fork)
+  const topT=path(x0,fx,x=>yTop(x));
+  const botT=path(x0,fx,x=>yBot(x));
+  // blend into fork point
+  topT.push([fx,L.cy-L.gapClosed/2+0]);botT.push([fx,L.cy+L.gapClosed/2]);
+  ribbon(topT,tm,8);ribbon(botT,tm2,8);
+
+  // Template bases (small knobs) on inner side
+  for(let x=x0+SP/2;x<fx-6;x+=SP){
+    const yt=yTop(x),yb=yBot(x);
+    const lt=templateLetterTop(x),lb=templateLetterBot(x);
+    nuc(x,yt+11,6.5,tm,lt);
+    nuc(x,yb-11,6.5,tm2,lb);
+  }
+
+  // Leading strand: on top template, synthesized rightward from x0..leadX, complementary nucleotides sitting inside top template
+  const leadEnd=fx-34;
+  for(let x=x0+SP/2;x<leadEnd;x+=SP){
+    const y=yTop(x)+11+17;
+    nuc(x,y,8,ld,comp[templateLetterTop(x)]);
+  }
+  // leading backbone
+  ribbon(path(x0,leadEnd,x=>yTop(x)+28),ld,5);
+  // Lagging: bottom template, finished fragments
+  S.frags.forEach((f,i)=>{
+    const a=Math.min(f.startX,f.endX),b=Math.max(f.startX,f.endX);
+    const col=f.joined?lg:lg;
+    for(let x=a;x<b;x+=SP){nuc(x,yBot(x)-28,8,lg,comp[templateLetterBot(x)]);}
+    ribbon(path(a,b,x=>yBot(x)-28),lg,5);
+    // primer segment (RNA) near 5' end (right end)
+    ctx.save();ctx.strokeStyle='#ff5d7a';ctx.lineWidth=5;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(b-26,yBot(b)-28);ctx.lineTo(b,yBot(b)-28);ctx.stroke();ctx.restore();
+    addHit(a,yBot(a)-42,b-a,28,'Okazaki fragment '+(i+1)+': made 5′→3′ (leftward), away from the fork. Pink = RNA primer. '+(f.joined?'Joined to its neighbour by DNA ligase.':'Awaiting DNA ligase.'));
+    if(f.joined&&i>0){
+      const jx=Math.max(f.startX,f.endX)+0; // junction is at left end of previous fragment? fragment i is to the right of i-1.
+      const jx2=Math.min(f.startX,f.endX);
+      const alpha=.35+f.flash*.65;
+      ctx.save();ctx.strokeStyle='rgba(255,230,120,'+alpha+')';ctx.lineWidth=3+f.flash*6;ctx.shadowColor='#ffd84a';ctx.shadowBlur=14*f.flash;
+      ctx.beginPath();ctx.moveTo(jx2,yBot(jx2)-38);ctx.lineTo(jx2,yBot(jx2)-18);ctx.stroke();ctx.restore();
+    }
+    if(!f.joined&&i>0){
+      const jx2=Math.min(f.startX,f.endX);
+      ctx.save();ctx.strokeStyle=mut;ctx.setLineDash([3,3]);ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.moveTo(jx2,yBot(jx2)-40);ctx.lineTo(jx2,yBot(jx2)-16);ctx.stroke();ctx.restore();
+      ctx.save();ctx.fillStyle='#ffd84a';ctx.globalAlpha=.4+.4*Math.sin(S.time*8);
+      ctx.beginPath();ctx.arc(jx2,yBot(jx2)-28,4,0,6.3);ctx.fill();ctx.restore();
+    }
+    // ligase
+    if(i>0&&!f.joined){
+      const jx2=Math.min(f.startX,f.endX),jy=yBot(jx2)-56;
+      ctx.save();ctx.fillStyle='#ffd84a';ctx.shadowColor='#000';ctx.shadowBlur=6;ctx.beginPath();ctx.ellipse(jx2,jy,24,11,0,0,6.3);ctx.fill();
+      ctx.shadowColor='transparent';ctx.fillStyle='#2a2000';ctx.font='700 10px Figtree';ctx.textAlign='center';ctx.textBaseline='middle';if(!quiz)ctx.fillText('Ligase',jx2,jy+.5);ctx.restore();
+      addHit(jx2-24,jy-12,48,24,'DNA ligase seals the nick between adjacent Okazaki fragments, forming a continuous strand.');
+    }
+  });
+  // Active lagging extension
+  const ls=S.lagState;
+  if(ls.phase==='prime'||ls.phase==='extend'||ls.phase==='release'){
+    const a=Math.min(ls.startX,ls.x),b=Math.max(ls.startX,ls.x);
+    if(ls.phase!=='release'){
+      for(let x=a;x<b;x+=SP){nuc(x,yBot(x)-28,8,lg,comp[templateLetterBot(x)]);}
+      if(b>a+2)ribbon(path(a,b,x=>yBot(x)-28),lg,5);
+    }
+    // primer
+    const px=ls.startX;
+    ctx.save();ctx.strokeStyle='#ff5d7a';ctx.lineWidth=5;ctx.lineCap='round';
+    ctx.globalAlpha=ls.phase==='prime'?Math.min(1,ls.t/0.9):1;
+    ctx.beginPath();ctx.moveTo(px-26,yBot(px)-28);ctx.lineTo(px,yBot(px)-28);ctx.stroke();ctx.restore();
+    if(ls.phase==='prime'){
+      ctx.save();ctx.fillStyle='#ff5d7a';ctx.shadowColor='#000';ctx.shadowBlur=6;ctx.beginPath();ctx.ellipse(px-10,yBot(px)-50,26,12,0,0,6.3);ctx.fill();
+      ctx.shadowColor='transparent';ctx.fillStyle='#fff';ctx.font='700 10px Figtree';ctx.textAlign='center';ctx.textBaseline='middle';if(!quiz)ctx.fillText('Primase',px-10,yBot(px)-49.5);ctx.restore();
+      addHit(px-36,yBot(px)-62,52,24,'Primase lays down a short RNA primer, giving polymerase a 3′ end to extend.');
+    }
+    if(ls.phase==='extend'){
+      polymerase(ls.x-26,yBot(ls.x)-60,lg,'DNA polymerase on the lagging strand: it can only add to a 3′ end, so it moves AWAY from the fork, one fragment at a time.',-1);
+      arrow(ls.x-62,yBot(ls.x)-60,ls.x-100,yBot(ls.x)-60,lg,3);
+    }
+  }
+  // Leading polymerase
+  polymerase(leadEnd+6,yTop(leadEnd)+36,ld,'DNA polymerase on the leading strand: it adds nucleotides to the 3′ end as the fork opens, so synthesis is continuous and moves toward the fork.',1);
+  arrow(leadEnd+44,yTop(leadEnd)+36,leadEnd+80,yTop(leadEnd)+36,ld,3);
+  helicase(fx,L.cy);
+
+  // Fork direction arrow
+  arrow(fx+60,L.cy-L.gapOpen-40,fx+150,L.cy-L.gapOpen-40,acc(),3);
+  txt('Fork movement',fx+60,L.cy-L.gapOpen-56,acc(),13,'left');
+
+  // 5'/3' labels
+  if(showDir){
+    // Top template: 3' at fork side?? top template 3'(left, open end) ... see below
+    // We defined leading synthesis moving right on top: new strand 5'(left)->3'(right). Template top therefore 3'(left)<-...5'(right).
+    endTag("3′",x0-4+14,yTop(x0)-24,tm);
+    endTag("5′",x1-14,L.cy-20,tm);
+    endTag("5′",x0-4+14,yBot(x0)+24,tm2);
+    endTag("3′",x1-14,L.cy+20,tm2);
+    // new strands
+    endTag("5′",x0+14,yTop(x0)+52,ld);
+    endTag("3′",leadEnd+2,yTop(leadEnd)+60,ld);
+    S.frags.slice(-1).forEach(f=>{const a=Math.min(f.startX,f.endX),b=Math.max(f.startX,f.endX);
+      endTag("3′",a-4,yBot(a)-56,lg);endTag("5′",b+4,yBot(b)-56,lg);});
+    if(!S.frags.length&&ls.phase==='extend'){endTag("5′",ls.startX+14,yBot(ls.startX)-56,lg);endTag("3′",ls.x-4,yBot(ls.x)-86,lg);}
+  }
+  // Strand names
+  txt('LEADING STRAND  (continuous)',x0+8,yTop(x0)-52,ld,13,'left');
+  txt('LAGGING STRAND  (Okazaki fragments)',x0+8,yBot(x0)+54,lg,13,'left');
+  txt('Template strands run antiparallel',x1-8,H-24,mut,12,'right','500');
+  txt('Daughter duplexes',x0+8,L.cy+3,mut,11,'left','500');
+  updateMsg();
+}
+function acc(){return hex('--acc');}
+function updateMsg(){
+  const ls=S.lagState;let k,t;
+  if(ls.phase==='prime'){k='p';t='<b>Primase</b> lays an RNA primer on the lagging template. Polymerase cannot start from nothing — it needs a free 3′ end.';}
+  else if(ls.phase==='extend'){k='e';t='<b>Lagging polymerase</b> extends the primer 5′→3′, which means it travels <b>away</b> from the fork. Meanwhile the leading polymerase moves with it, uninterrupted.';}
+  else if(ls.phase==='release'){k='r';t='Fragment finished. The polymerase must <b>loop back</b> toward the fork to start a new primer on freshly exposed template.';}
+  else {k='i';t='';}
+  if(k!=='i'&&k!==S.msgKey){S.msgKey=k;msg.innerHTML=t;}
+  if(!S.msgKey)msg.innerHTML='Helicase opens the fork. Polymerase adds nucleotides only to a <b>3′ end</b>, so every new strand grows 5′→3′.';
+}
+
+// UI
+const playBtn=document.getElementById('play');
+playBtn.onclick=()=>{S.playing=!S.playing;playBtn.textContent=S.playing?'⏸ Pause':'▶ Play';};
+document.getElementById('step').onclick=()=>{S.playing=false;playBtn.textContent='▶ Play';for(let i=0;i<20;i++)tick(0.05);};
+document.getElementById('reset').onclick=()=>{reset();};
+document.getElementById('spd').oninput=e=>{S.speed=+e.target.value;};
+function tg(id,fn){const b=document.getElementById(id);b.onclick=()=>{const v=b.getAttribute('aria-pressed')!=='true';b.setAttribute('aria-pressed',v);fn(v);};}
+tg('tglDir',v=>showDir=v);tg('tglSeq',v=>showSeq=v);tg('tglQuiz',v=>quiz=v);
+
+cv.addEventListener('mousemove',e=>{
+  const r=cv.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;
+  let h=null;for(let i=hits.length-1;i>=0;i--){const q=hits[i];if(x>=q.x&&x<=q.x+q.w&&y>=q.y&&y<=q.y+q.h){h=q;break;}}
+  if(h&&!quiz){tip.textContent=h.text;tip.style.opacity=1;tip.style.left=Math.min(W-250,x+14)+'px';tip.style.top=Math.max(4,y+14)+'px';}
+  else tip.style.opacity=0;
+});
+cv.addEventListener('mouseleave',()=>tip.style.opacity=0);
+
+let last=performance.now(),raf;
+function frame(n){
+  const dt=Math.min(.05,(n-last)/1000);last=n;
+  if(S.playing)tick(dt);
+  draw();raf=requestAnimationFrame(frame);
+}
+document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelAnimationFrame(raf);else{last=performance.now();raf=requestAnimationFrame(frame);}});
+raf=requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

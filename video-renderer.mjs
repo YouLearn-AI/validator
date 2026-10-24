@@ -97,10 +97,10 @@ export const VIDEO_DEFAULTS = Object.freeze({
 
 const FFMPEG_KILL_GRACE_MS = 2_000;
 
-const PREFER = /\b(play|start|run|launch|fire|step|next|search|go|check|begin|animate|simulate|throw|shoot|explore|try|balance|compare)\b/i;
+export const PREFER = /\b(play|start|run|launch|fire|step|next|search|go|check|begin|animate|simulate|throw|shoot|explore|try|balance|compare)\b/i;
 // A control that stops or clears what the page shows is never pressed: a heart interactive's first button was
 // "⏸ Pause", and the clip of it paused had no motion (ops I-609).
-const AVOID = /⏸|⏹|\b(pause|stop|halt|freeze|reset|clear)\b/i;
+export const AVOID = /⏸|⏹|\b(pause|stop|halt|freeze|reset|clear)\b/i;
 
 export class RenderBusy extends Error {
   constructor() {
@@ -152,7 +152,7 @@ function stepAnimations(dt) {
 }
 
 // Runs in the page: the control to use, as the I-610 harness picks it.
-function pickControl({ preferSource, avoidSource }) {
+export function pickControl({ preferSource, avoidSource }) {
   const prefer = new RegExp(preferSource, 'i');
   const avoid = new RegExp(avoidSource, 'i');
   const visible = (el) => {

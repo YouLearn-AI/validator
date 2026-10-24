@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --bg:#0d1117; --panel:#161c26; --panel2:#1d2531; --ink:#e8ecf2; --mute:#8d99ab; --line:#2a3444;
+  --hot:#ff6a3d; --cold:#4da3ff; --accent:#f5c451; --good:#59d49a;
+  --shadow:0 10px 30px rgba(0,0,0,.45);
+}
+@media (prefers-color-scheme: light){
+  :root{--bg:#e9e6df; --panel:#f7f5f0; --panel2:#ebe7de; --ink:#1c2430; --mute:#5e6a7a; --line:#cfc9bb; --shadow:0 10px 24px rgba(60,50,30,.18);--accent:#b8860b;}
+}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(circle at 30% 0%,var(--panel2),var(--bg) 70%);color:var(--ink);
+  font-family:"Gill Sans","Trebuchet MS","Segoe UI",sans-serif;min-height:100vh;padding:14px}
+.wrap{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1fr 330px;gap:14px}
+@media(max-width:860px){.wrap{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:14px}
+.stage{display:flex;gap:14px;align-items:stretch}
+#sim{width:100%;height:auto;display:block;border-radius:10px;background:#0a0e14;touch-action:none}
+.simbox{flex:1;min-width:0}
+.gauge{width:120px;display:flex;flex-direction:column;align-items:center;justify-content:center}
+@media(max-width:560px){.stage{flex-direction:column}.gauge{width:100%}}
+h3{margin:0 0 6px;font-family:Georgia,"Palatino Linotype",serif;font-weight:normal;font-size:15px;letter-spacing:.04em;color:var(--accent);text-transform:uppercase}
+label{display:flex;justify-content:space-between;font-size:14px;margin-top:10px}
+label b{font-family:"Courier New",monospace;color:var(--accent)}
+input[type=range]{width:100%;accent-color:var(--accent);height:28px}
+.btns{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+button{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font:inherit;font-size:13px;cursor:pointer}
+button:hover,button:focus-visible{border-color:var(--accent);outline:none}
+button.on{background:var(--accent);color:#111}
+.stat{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.stat div{background:var(--panel2);border-radius:8px;padding:8px;font-size:12px;color:var(--mute)}
+.stat strong{display:block;font-family:"Courier New",monospace;font-size:17px;color:var(--ink)}
+.note{font-size:13px;line-height:1.5;color:var(--ink);background:var(--panel2);border-left:3px solid var(--accent);padding:9px 11px;border-radius:6px;margin-top:10px;min-height:92px}
+.legend{font-size:12px;color:var(--mute);margin-top:8px;line-height:1.5}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px}
+.bar{height:8px;border-radius:4px;background:var(--panel2);overflow:hidden;margin-top:3px}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--cold),var(--hot));transition:width .2s}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="stage">
+      <div class="simbox"><canvas id="sim" width="640" height="440" aria-label="Gas particle simulation"></canvas></div>
+      <div class="gauge"><canvas id="gauge" width="120" height="150" aria-label="Pressure gauge"></canvas></div>
+    </div>
+    <div class="legend"><span class="dot" style="background:var(--cold)"></span>slow (cool) &nbsp; <span class="dot" style="background:var(--hot)"></span>fast (hot) &nbsp; · &nbsp; white flashes on the walls = collisions &nbsp; · &nbsp; N = 60 particles (fixed)</div>
+  </div>
+  <div class="card">
+    <h3>Controls</h3>
+    <label for="T">Temperature <b id="Tv"></b></label>
+    <input id="T" type="range" min="100" max="900" step="10" value="300" aria-label="Temperature">
+    <label for="V">Container volume <b id="Vv"></b></label>
+    <input id="V" type="range" min="25" max="100" step="1" value="100" aria-label="Volume">
+    <div class="btns">
+      <button id="bT">Demo: heat only</button>
+      <button id="bV">Demo: squeeze only</button>
+      <button id="bR">Reset</button>
+      <button id="bP">Pause</button>
+    </div>
+    <h3 style="margin-top:14px">Live readings</h3>
+    <div class="stat">
+      <div>Avg speed<strong id="sS">–</strong></div>
+      <div>Hits / second<strong id="sH">–</strong></div>
+      <div>Pressure<strong id="sP">–</strong></div>
+      <div>Ideal P = NkT/V<strong id="sI">–</strong></div>
+    </div>
+    <div class="bar" title="pressure"><i id="pb"></i></div>
+    <div class="note" id="note"></div>
+  </div>
+</div>
+<script>
+(function(){
+const cv=document.getElementById('sim'),ctx=cv.getContext('2d');
+const gc=document.getElementById('gauge'),gx=gc.getContext('2d');
+const $=id=>document.getElementById(id);
+const W=cv.width,H=cv.height,N=60,R=6;
+const BOX_L=30,BOX_T=40,BOX_H=H-80,FULL_W=W-60-30; // full box width; piston moves in
+let T=300,Vp=100,paused=false;
+let sparks=[],hitsWin=[],pressure=0,prevT=0,lastChange='';
+let pistonX=BOX_L+FULL_W;
+const P=[];
+function speedFor(t){return 2.2*Math.sqrt(t/300)*60;} // px/s rms-ish scale
+function boxRight(){return BOX_L+FULL_W*Vp/100;}
+function init(){
+  P.length=0;
+  for(let i=0;i<N;i++){
+    const a=Math.random()*6.283,s=speedFor(T)*(0.6+Math.random()*0.8);
+    P.push({x:BOX_L+R+Math.random()*(boxRight()-BOX_L-2*R),y:BOX_T+R+Math.random()*(BOX_H-2*R),vx:Math.cos(a)*s,vy:Math.sin(a)*s});
+  }
+}
+function setT(v){
+  const old=T;T=v;
+  // rescale speeds so mean KE tracks T
+  const k=Math.sqrt(T/old);
+  P.forEach(p=>{p.vx*=k;p.vy*=k;});
+}
+function color(s){
+  const f=Math.min(1,Math.max(0,(s/ speedFor(900)-0.25)/0.9));
+  const r=Math.round(77+f*178),g=Math.round(163-f*57),b=Math.round(255-f*194);
+  return [r,g,b];
+}
+function step(dt){
+  const right=boxRight();
+  pistonX+=(right-pistonX)*Math.min(1,dt*8);
+  const wall=pistonX;
+  P.forEach(p=>{
+    p.x+=p.vx*dt;p.y+=p.vy*dt;
+    let hit=null;
+    if(p.x<BOX_L+R){p.x=BOX_L+R;p.vx=Math.abs(p.vx);hit=[BOX_L,p.y];}
+    if(p.x>wall-R){p.x=wall-R;p.vx=-Math.abs(p.vx);hit=[wall,p.y];}
+    if(p.y<BOX_T+R){p.y=BOX_T+R;p.vy=Math.abs(p.vy);hit=[p.x,BOX_T];}
+    if(p.y>BOX_T+BOX_H-R){p.y=BOX_T+BOX_H-R;p.vy=-Math.abs(p.vy);hit=[p.x,BOX_T+BOX_H];}
+    if(hit){
+      const sp=Math.hypot(p.vx,p.vy);
+      hitsWin.push({t:performance.now(),j:sp});
+      sparks.push({x:hit[0],y:hit[1],a:1});
+    }
+  });
+  // gentle particle-particle collisions
+  for(let i=0;i<N;i++)for(let j=i+1;j<N;j++){
+    const a=P[i],b=P[j],dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy;
+    if(d2<4*R*R&&d2>0.01){
+      const d=Math.sqrt(d2),nx=dx/d,ny=dy/d,rel=(a.vx-b.vx)*nx+(a.vy-b.vy)*ny;
+      if(rel>0){a.vx-=rel*nx;a.vy-=rel*ny;b.vx+=rel*nx;b.vy+=rel*ny;}
+      const o=(2*R-d)/2;a.x-=nx*o;a.y-=ny*o;b.x+=nx*o;b.y+=ny*o;
+    }
+  }
+  sparks.forEach(s=>s.a-=dt*4);sparks=sparks.filter(s=>s.a>0);
+}
+function metal(x,y,w,h,vert){
+  const g=vert?ctx.createLinearGradient(x,0,x+w,0):ctx.createLinearGradient(0,y,0,y+h);
+  g.addColorStop(0,'#4a525e');g.addColorStop(.3,'#c9d0da');g.addColorStop(.5,'#f2f5f9');g.addColorStop(.7,'#9aa3b0');g.addColorStop(1,'#3b424d');
+  ctx.fillStyle=g;ctx.fillRect(x,y,w,h);
+}
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  const bg=ctx.createLinearGradient(0,0,0,H);bg.addColorStop(0,'#10151d');bg.addColorStop(1,'#06080c');
+  ctx.fillStyle=bg;ctx.fillRect(0,0,W,H);
+  const wall=pistonX;
+  // gas interior
+  const ig=ctx.createLinearGradient(0,BOX_T,0,BOX_T+BOX_H);
+  const tf=(T-100)/800;
+  ig.addColorStop(0,`rgba(${60+tf*160},${90},${140-tf*90},.28)`);ig.addColorStop(1,`rgba(${40+tf*120},${50},${80-tf*40},.5)`);
+  ctx.fillStyle=ig;ctx.fillRect(BOX_L,BOX_T,wall-BOX_L,BOX_H);
+  // glass glare
+  const gl=ctx.createLinearGradient(BOX_L,0,wall,0);gl.addColorStop(0,'rgba(255,255,255,.07)');gl.addColorStop(.15,'rgba(255,255,255,0)');
+  ctx.fillStyle=gl;ctx.fillRect(BOX_L,BOX_T,wall-BOX_L,BOX_H);
+  // wall glow from pressure
+  const pg=Math.min(1,pressure/ (idealP(900,25)*0.6));
+  ctx.save();ctx.shadowColor=`rgba(255,${180-pg*110},80,${.3+pg*.6})`;ctx.shadowBlur=8+pg*22;
+  ctx.strokeStyle=`rgba(255,${200-pg*120},120,${.25+pg*.6})`;ctx.lineWidth=2;
+  ctx.strokeRect(BOX_L,BOX_T,wall-BOX_L,BOX_H);ctx.restore();
+  // frame walls
+  metal(BOX_L-10,BOX_T-10,wall-BOX_L+10,10,false);
+  metal(BOX_L-10,BOX_T+BOX_H,wall-BOX_L+10,10,false);
+  metal(BOX_L-10,BOX_T-10,10,BOX_H+20,true);
+  // piston rod + head
+  metal(wall,BOX_T+BOX_H/2-9,W-wall-8,18,false);
+  metal(W-30,BOX_T+BOX_H/2-34,14,68,true);
+  metal(wall,BOX_T,14,BOX_H,true);
+  ctx.fillStyle='rgba(0,0,0,.35)';ctx.fillRect(wall+14,BOX_T,5,BOX_H);
+  // particles
+  P.forEach(p=>{
+    const s=Math.hypot(p.vx,p.vy),[r,g,b]=color(s);
+    // motion trail
+    ctx.strokeStyle=`rgba(${r},${g},${b},.25)`;ctx.lineWidth=R*1.2;ctx.lineCap='round';
+    ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(p.x-p.vx*0.04,p.y-p.vy*0.04);ctx.stroke();
+    ctx.fillStyle='rgba(0,0,0,.35)';ctx.beginPath();ctx.ellipse(p.x+2,p.y+3,R,R*.8,0,0,6.283);ctx.fill();
+    const rg=ctx.createRadialGradient(p.x-R*.4,p.y-R*.4,1,p.x,p.y,R);
+    rg.addColorStop(0,'#fff');rg.addColorStop(.25,`rgb(${Math.min(255,r+60)},${Math.min(255,g+60)},${Math.min(255,b+60)})`);
+    rg.addColorStop(1,`rgb(${r*.55|0},${g*.55|0},${b*.55|0})`);
+    ctx.fillStyle=rg;ctx.beginPath();ctx.arc(p.x,p.y,R,0,6.283);ctx.fill();
+  });
+  // sparks
+  sparks.forEach(s=>{
+    ctx.fillStyle=`rgba(255,255,255,${s.a*.9})`;ctx.shadowColor='#fff';ctx.shadowBlur=10;
+    ctx.beginPath();ctx.arc(s.x,s.y,3+ (1-s.a)*5,0,6.283);ctx.fill();ctx.shadowBlur=0;
+  });
+  // labels
+  ctx.fillStyle='#8d99ab';ctx.font='12px "Courier New",monospace';
+  ctx.fillText('V = '+Vp+'%',BOX_L,BOX_T-18);
+  ctx.fillText('T = '+T+' K',BOX_L+100,BOX_T-18);
+  ctx.fillText('piston \u2192',W-90,BOX_T+BOX_H/2-44);
+  // volume bracket
+  ctx.strokeStyle='#f5c451';ctx.lineWidth=1;ctx.beginPath();
+  ctx.moveTo(BOX_L,BOX_T+BOX_H+22);ctx.lineTo(wall,BOX_T+BOX_H+22);
+  ctx.moveTo(BOX_L,BOX_T+BOX_H+17);ctx.lineTo(BOX_L,BOX_T+BOX_H+27);
+  ctx.moveTo(wall,BOX_T+BOX_H+17);ctx.lineTo(wall,BOX_T+BOX_H+27);ctx.stroke();
+  ctx.fillStyle='#f5c451';ctx.fillText('available space',BOX_L+(wall-BOX_L)/2-45,BOX_T+BOX_H+38);
+}
+function idealP(t,v){return t/v;} // relative units (N,k const)
+function drawGauge(){
+  gx.clearRect(0,0,120,150);
+  const cx=60,cy=80,r=48;
+  const g=gx.createRadialGradient(cx-10,cy-10,5,cx,cy,r+8);
+  g.addColorStop(0,'#f4f4ee');g.addColorStop(1,'#cfd3d6');
+  gx.fillStyle='#2b3037';gx.beginPath();gx.arc(cx,cy,r+8,0,6.283);gx.fill();
+  gx.fillStyle=g;gx.beginPath();gx.arc(cx,cy,r,0,6.283);gx.fill();
+  gx.strokeStyle='#222';gx.fillStyle='#222';gx.font='9px Georgia';gx.textAlign='center';
+  const a0=Math.PI*0.75,a1=Math.PI*2.25;
+  for(let i=0;i<=10;i++){
+    const a=a0+(a1-a0)*i/10,l=i%5==0?10:6;
+    gx.lineWidth=i%5==0?1.6:1;gx.beginPath();
+    gx.moveTo(cx+Math.cos(a)*(r-4),cy+Math.sin(a)*(r-4));gx.lineTo(cx+Math.cos(a)*(r-4-l),cy+Math.sin(a)*(r-4-l));gx.stroke();
+  }
+  gx.fillText('PRESSURE',cx,cy+22);gx.fillText('low',cx-30,cy+40);gx.fillText('high',cx+30,cy+40);
+  const frac=Math.min(1,pressure/idealP(900,25)*1.0);
+  const a=a0+(a1-a0)*Math.pow(frac,0.7);
+  gx.strokeStyle='#c0392b';gx.lineWidth=2.5;gx.lineCap='round';
+  gx.beginPath();gx.moveTo(cx,cy);gx.lineTo(cx+Math.cos(a)*(r-8),cy+Math.sin(a)*(r-8));gx.stroke();
+  gx.fillStyle='#222';gx.beginPath();gx.arc(cx,cy,4,0,6.283);gx.fill();
+  const sh=gx.createLinearGradient(0,cy-r,0,cy);sh.addColorStop(0,'rgba(255,255,255,.4)');sh.addColorStop(1,'rgba(255,255,255,0)');
+  gx.fillStyle=sh;gx.beginPath();gx.ellipse(cx,cy-r*.5,r*.8,r*.45,0,0,6.283);gx.fill();
+  gx.textAlign='left';
+}
+function stats(){
+  const now=performance.now();
+  hitsWin=hitsWin.filter(h=>now-h.t<1000);
+  // pressure ∝ momentum transferred per second / wall area (perimeter ∝ box)
+  let imp=0;hitsWin.forEach(h=>imp+=h.j);
+  const perim=2*(boxRight()-BOX_L+BOX_H);
+  const raw=imp/perim;
+  pressure+=(raw/ (pScale) - pressure)*0.15;
+  let sp=0;P.forEach(p=>sp+=Math.hypot(p.vx,p.vy));sp/=N;
+  $('sS').textContent=(sp/speedFor(300)*500|0)+' m/s';
+  $('sH').textContent=hitsWin.length;
+  $('sP').textContent=pressure.toFixed(1)+' kPa';
+  $('sI').textContent=(idealP(T,Vp)*100/3).toFixed(1)+' kPa';
+  $('pb').style.width=Math.min(100,pressure/ (idealP(900,25)*100/3)*100)+'%';
+}
+let pScale=1;
+function calibrate(){ // so that measured pressure ≈ ideal in kPa at default
+  pScale=1;
+}
+function ui(){
+  $('Tv').textContent=T+' K';$('Vv').textContent=Vp+'%';
+}
+function explain(){
+  let h='';
+  if(lastChange==='T'){
+    h='<b>Temperature changed.</b> Particles move faster (higher energy), so each hit is harder <i>and</i> hits come more often. Same space, more force per second \u2192 pressure ∝ T at fixed V.';
+  }else if(lastChange==='V'){
+    h='<b>Volume changed.</b> Particles keep the same speed, but with less room they reach a wall sooner, so hits are more frequent. Each hit is equally hard \u2192 pressure ∝ 1/V at fixed T.';
+  }else{
+    h='Adjust a slider. <b>Temperature</b> changes how fast and how hard particles hit. <b>Volume</b> changes how often they hit. Both raise pressure, for different reasons.';
+  }
+  $('note').innerHTML=h;
+}
+$('T').addEventListener('input',e=>{setT(+e.target.value);lastChange='T';ui();explain();});
+$('V').addEventListener('input',e=>{Vp=+e.target.value;lastChange='V';ui();explain();});
+$('bR').onclick=()=>{T=300;Vp=100;$('T').value=300;$('V').value=100;lastChange='';init();ui();explain();};
+$('bP').onclick=function(){paused=!paused;this.textContent=paused?'Play':'Pause';this.classList.toggle('on',paused);};
+let demo=null;
+function runDemo(kind){
+  clearInterval(demo);let i=0;
+  $('bT').classList.toggle('on',kind==='T');$('bV').classList.toggle('on',kind==='V');
+  demo=setInterval(()=>{
+    i++;
+    if(kind==='T'){const v=Math.round(300+300*(0.5-0.5*Math.cos(i/30*Math.PI*2))*1.5);setT(v);$('T').value=v;lastChange='T';}
+    else{const v=Math.round(100-37*(0.5-0.5*Math.cos(i/30*Math.PI*2))*2);Vp=Math.max(25,v);$('V').value=Vp;lastChange='V';}
+    ui();explain();
+    if(i>=30){clearInterval(demo);$('bT').classList.remove('on');$('bV').classList.remove('on');}
+  },100);
+}
+$('bT').onclick=()=>{ $('V').value=Vp=100;runDemo('T');};
+$('bV').onclick=()=>{ setT(300);$('T').value=300;runDemo('V');};
+// calibrate pressure scale: measure mean impulse rate at default through run; set simple analytic scale
+// impulse rate per perimeter ∝ N*s*s/(area) ~ T/V, so scale by constant
+(function(){
+  const s=speedFor(300)*1.0, area=FULL_W*BOX_H, perim=2*(FULL_W+BOX_H);
+  // hits/s on perimeter ≈ N*s*perim/(π*area)*... ; impulse ≈ 2 s*(hits) ; use heuristic
+  const rate=N*s*perim/(Math.PI*area)*0.9;
+  const raw=rate*s/perim;
+  pScale=raw/(100/3);
+})();
+let last=performance.now();
+function loop(t){
+  const dt=Math.min(0.03,(t-last)/1000);last=t;
+  if(!paused&&!document.hidden){
+    for(let k=0;k<2;k++)step(dt/2);
+  }
+  draw();drawGauge();
+  requestAnimationFrame(loop);
+}
+let sc=0;setInterval(()=>{if(!paused)stats();},120);
+document.addEventListener('visibilitychange',()=>{last=performance.now();});
+init();ui();explain();requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

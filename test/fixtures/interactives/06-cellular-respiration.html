@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glucose to ATP</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f3ece0;--panel:#fffaf0;--ink:#2b2118;--mute:#7a6a58;--line:#d9ccb6;
+  --cyto:#f6dcc0;--cyto2:#eec9a3;--accent:#c4452b;--atp:#e0a100;--good:#2f7d5b;
+  --shadow:0 6px 20px rgba(60,40,20,.15);
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#14100d;--panel:#211a15;--ink:#f1e6d4;--mute:#a8967f;--line:#3d3228;
+  --cyto:#3b2418;--cyto2:#2c1a12;--accent:#ff7a59;--atp:#ffc83d;--good:#5fd0a0;--shadow:0 6px 24px rgba(0,0,0,.5);}
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font-family:'Figtree',sans-serif;display:flex;flex-direction:column;min-height:100vh}
+.wrap{max-width:1100px;width:100%;margin:0 auto;padding:12px;display:flex;flex-direction:column;gap:10px;flex:1}
+.stages{display:flex;gap:6px;flex-wrap:wrap}
+.stages button{flex:1;min-width:130px;background:var(--panel);color:var(--ink);border:1.5px solid var(--line);border-radius:10px;padding:8px 10px;cursor:pointer;font:600 13px 'Figtree';text-align:left;box-shadow:var(--shadow);transition:.25s;animation:rise .6s both}
+.stages button:nth-child(2){animation-delay:.08s}.stages button:nth-child(3){animation-delay:.16s}.stages button:nth-child(4){animation-delay:.24s}.stages button:nth-child(5){animation-delay:.32s}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.stages button small{display:block;font-weight:400;color:var(--mute);font-size:11px;margin-top:2px}
+.stages button.on{border-color:var(--accent);background:linear-gradient(180deg,var(--panel),var(--cyto));transform:translateY(-2px)}
+.stages b{font-family:'Fraunces',serif;color:var(--accent);margin-right:4px}
+.stage-area{position:relative;background:var(--panel);border:1.5px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+canvas{display:block;width:100%;height:auto}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.card{background:var(--panel);border:1.5px solid var(--line);border-radius:14px;padding:12px 14px;box-shadow:var(--shadow);flex:1;min-width:260px}
+.card h3{margin:0 0 4px;font:700 17px 'Fraunces',serif}
+.card p{margin:4px 0;font-size:14px;line-height:1.45}
+.ctrl{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ctrl button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:8px 14px;font:600 13px 'Figtree';cursor:pointer}
+.ctrl button.alt{background:var(--panel);color:var(--ink);border:1.5px solid var(--line)}
+button:focus-visible{outline:3px solid var(--atp);outline-offset:2px}
+.bars{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+.bar{display:flex;align-items:center;gap:8px;font-size:12px}
+.bar span.l{width:120px;color:var(--mute)}
+.bar .t{flex:1;height:14px;background:var(--line);border-radius:7px;overflow:hidden;position:relative}
+.bar .f{height:100%;width:0;border-radius:7px;transition:width .8s cubic-bezier(.2,.8,.2,1)}
+.bar .n{width:70px;text-align:right;font-weight:600}
+.tot{font:700 30px 'Fraunces',serif;color:var(--atp)}
+.note{font-size:12px;color:var(--mute);line-height:1.4}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="stages" id="stages" role="tablist" aria-label="Stages of cellular respiration"></div>
+  <div class="stage-area"><canvas id="cv" aria-label="Animated cell showing glucose breakdown"></canvas></div>
+  <div class="row">
+    <div class="card" id="info" aria-live="polite"></div>
+    <div class="card">
+      <h3>ATP ledger <span class="tot" id="tot">0</span></h3>
+      <div class="bars" id="bars"></div>
+      <p class="note">Modern estimate ≈ 29–30 ATP per glucose (range varies with cell type and proton leak). Older textbooks' "38" overstated the yield.</p>
+      <div class="ctrl" style="margin-top:8px">
+        <button id="play" aria-label="Pause or play animation">Pause</button>
+        <button class="alt" id="prev" aria-label="Previous stage">◀ Prev</button>
+        <button class="alt" id="next" aria-label="Next stage">Next ▶</button>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+const S=[
+ {n:'Glycolysis',w:'Cytosol',d:'1 glucose (6C) → 2 pyruvate (3C)',direct:2,nadh:2,fadh:0,
+  t:'Glucose is split in the cytosol. Two ATP are invested, four are made by substrate-level phosphorylation: net +2 ATP directly. Two NADH are also produced. No oxygen needed.'},
+ {n:'Pyruvate oxidation',w:'Mitochondrial matrix',d:'2 pyruvate → 2 acetyl-CoA + 2 CO₂',direct:0,nadh:2,fadh:0,
+  t:'Pyruvate enters the matrix through transporters. Each loses a carbon as CO₂ and is oxidized to acetyl-CoA, producing 1 NADH each (2 per glucose). 0 ATP directly.'},
+ {n:'Citric acid cycle',w:'Mitochondrial matrix',d:'2 acetyl-CoA → 4 CO₂',direct:2,nadh:6,fadh:2,
+  t:'Two turns per glucose finish the oxidation of carbon to CO₂ (4 CO₂ here). Yield: 2 ATP (or GTP) directly, 6 NADH and 2 FADH₂ carrying high-energy electrons.'},
+ {n:'Electron transport & ATP synthase',w:'Inner mitochondrial membrane',d:'10 NADH + 2 FADH₂ + O₂ → H₂O + ATP',direct:0,nadh:0,fadh:0,ox:true,
+  t:'NADH and FADH₂ hand electrons to complexes I–IV, pumping H⁺ into the intermembrane space. O₂ is the final electron acceptor, forming H₂O. H⁺ flows back through ATP synthase: about 25–26 ATP indirectly.'},
+ {n:'Summary',w:'Whole cell',d:'≈ 29–30 ATP per glucose',direct:0,nadh:0,fadh:0,sum:true,
+  t:'Direct (substrate-level): 2 + 2 = 4 ATP. Indirect, via the proton gradient: about 25–26 ATP. Total ≈ 29–30. Most ATP depends on oxygen being available at the end of the chain.'}
+];
+let cur=0,playing=true,t0=0,tAnim=0;
+const cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+const stagesEl=document.getElementById('stages');
+S.forEach((s,i)=>{const b=document.createElement('button');b.setAttribute('role','tab');b.innerHTML=`<b>${i<4?i+1:'Σ'}</b>${s.n}<small>${s.w}</small>`;b.onclick=()=>go(i);stagesEl.appendChild(b)});
+const barDefs=[['Glycolysis (direct)',2,'#e0a100'],['Citric acid (direct)',2,'#d98324'],['Oxidative phos. (indirect)',25.5,'#c4452b']];
+const barsEl=document.getElementById('bars');
+barDefs.forEach(b=>{barsEl.insertAdjacentHTML('beforeend',`<div class="bar"><span class="l">${b[0]}</span><div class="t"><div class="f" style="background:${b[2]}"></div></div><span class="n">0</span></div>`)});
+function vals(){ // cumulative by stage
+  const v=[0,0,0];
+  if(cur>=0)v[0]=cur>=0?2:0;
+  v[0]=cur>=0?2:0; v[1]=cur>=2?2:0; v[2]=cur>=3?25.5:0;
+  return v;
+}
+function updateUI(){
+  [...stagesEl.children].forEach((b,i)=>{b.classList.toggle('on',i===cur);b.setAttribute('aria-selected',i===cur)});
+  const s=S[cur];
+  document.getElementById('info').innerHTML=`<h3>${s.n}</h3><p><b>Where:</b> ${s.w}</p><p><b>Change:</b> ${s.d}</p><p>${s.t}</p><p class="note">Carriers made: NADH ${s.nadh} · FADH₂ ${s.fadh} (per glucose) ${s.sum?'· Totals: 10 NADH, 2 FADH₂':''}</p>`;
+  const v=vals();const fs=barsEl.querySelectorAll('.f'),ns=barsEl.querySelectorAll('.n');
+  v.forEach((x,i)=>{fs[i].style.width=(x/barDefs[i][1]*100)+'%';ns[i].textContent=x?(i==2?'≈25–26':x):'0'});
+  const tot=v[0]+v[1]+v[2];
+  document.getElementById('tot').textContent=cur>=3?'≈'+(cur===3?'29–30':'29–30'):tot;
+}
+function go(i){cur=(i+S.length)%S.length;tAnim=0;updateUI()}
+document.getElementById('next').onclick=()=>go(cur+1);
+document.getElementById('prev').onclick=()=>go(cur-1);
+document.getElementById('play').onclick=e=>{playing=!playing;e.target.textContent=playing?'Pause':'Play';if(playing)last=performance.now()};
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight')go(cur+1);if(e.key==='ArrowLeft')go(cur-1)});
+let W=1000,H=520,dpr=1;
+function resize(){const w=cv.parentElement.clientWidth;dpr=Math.min(2,window.devicePixelRatio||1);W=w;H=Math.max(360,Math.min(560,w*.52));cv.width=w*dpr;cv.height=H*dpr;cv.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0)}
+window.addEventListener('resize',resize);resize();
+const dark=()=>matchMedia('(prefers-color-scheme:dark)').matches;
+function rr(x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath()}
+function sphere(x,y,r,c1,c2){const g=ctx.createRadialGradient(x-r*.35,y-r*.35,r*.1,x,y,r);g.addColorStop(0,c1);g.addColorStop(1,c2);ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill()}
+function label(t,x,y,c,sz=13,al='center',bold=true){ctx.fillStyle=c||(dark()?'#f1e6d4':'#2b2118');ctx.font=`${bold?600:400} ${sz}px Figtree`;ctx.textAlign=al;ctx.fillText(t,x,y)}
+function glucoseRing(x,y,r,a){ctx.save();ctx.translate(x,y);ctx.rotate(a);ctx.beginPath();for(let i=0;i<6;i++){const an=i*Math.PI/3;ctx[i?'lineTo':'moveTo'](Math.cos(an)*r,Math.sin(an)*r)}ctx.closePath();const g=ctx.createLinearGradient(-r,-r,r,r);g.addColorStop(0,'#fff3d0');g.addColorStop(1,'#d9822b');ctx.fillStyle=g;ctx.fill();ctx.strokeStyle='#8a4a10';ctx.lineWidth=1.5;ctx.stroke();ctx.restore()}
+function pyr(x,y,r){sphere(x,y,r,'#ffd98a','#c9701c');sphere(x+r*1.4,y+r*.2,r*.8,'#ffd98a','#c9701c');sphere(x+r*.6,y-r*1.2,r*.8,'#ffd98a','#c9701c')}
+function atp(x,y,s=1){ctx.save();ctx.translate(x,y);ctx.shadowColor='rgba(255,190,0,.8)';ctx.shadowBlur=10;sphere(0,0,9*s,'#fff2a0','#e0a100');ctx.shadowBlur=0;ctx.fillStyle='#5a3d00';ctx.font=`700 ${8*s}px Figtree`;ctx.textAlign='center';ctx.fillText('ATP',0,3*s);ctx.restore()}
+function co2(x,y){sphere(x,y,5,'#bbb','#555');sphere(x-7,y+3,3.5,'#f66','#a22');sphere(x+7,y+3,3.5,'#f66','#a22')}
+// mito geometry
+function mito(cx,cy,w,h){
+  ctx.save();
+  // outer membrane
+  let g=ctx.createLinearGradient(0,cy-h/2,0,cy+h/2);g.addColorStop(0,'#e9a08a');g.addColorStop(1,'#b5543d');
+  rr(cx-w/2,cy-h/2,w,h,h/2);ctx.fillStyle=g;ctx.shadowColor='rgba(0,0,0,.35)';ctx.shadowBlur=18;ctx.shadowOffsetY=8;ctx.fill();ctx.shadowColor='transparent';
+  // intermembrane space
+  const m=9;rr(cx-w/2+m,cy-h/2+m,w-2*m,h-2*m,(h-2*m)/2);g=ctx.createLinearGradient(0,cy-h/2,0,cy+h/2);g.addColorStop(0,'#f6c9b4');g.addColorStop(1,'#d98a70');ctx.fillStyle=g;ctx.fill();
+  // inner membrane with cristae
+  const m2=22;ctx.beginPath();
+  const x0=cx-w/2+m2,x1=cx+w/2-m2,y0=cy-h/2+m2,y1=cy+h/2-m2,n=5,step=(x1-x0)/n;
+  ctx.moveTo(x0+ (y1-y0)/2,y0);
+  ctx.lineTo(x1-(y1-y0)/2,y0);ctx.arc(x1-(y1-y0)/2,cy,(y1-y0)/2,-Math.PI/2,Math.PI/2);
+  ctx.lineTo(x0+(y1-y0)/2,y1);ctx.arc(x0+(y1-y0)/2,cy,(y1-y0)/2,Math.PI/2,Math.PI*1.5);
+  ctx.closePath();
+  g=ctx.createLinearGradient(0,y0,0,y1);g.addColorStop(0,dark()?'#5a3a2a':'#f2e2c4');g.addColorStop(1,dark()?'#3a2418':'#d8bf90');ctx.fillStyle=g;ctx.fill();
+  ctx.strokeStyle='#8a3d2a';ctx.lineWidth=3;ctx.stroke();
+  // cristae folds
+  ctx.strokeStyle='#8a3d2a';ctx.lineWidth=3;
+  for(let i=1;i<n;i++){const x=x0+(y1-y0)/2+ (x1-x0-(y1-y0))*(i/n);const top=i%2===0;ctx.beginPath();if(top){ctx.moveTo(x,y0);ctx.bezierCurveTo(x-10,y0+30,x+10,y0+50,x,y0+(y1-y0)*.62)}else{ctx.moveTo(x,y1);ctx.bezierCurveTo(x-10,y1-30,x+10,y1-50,x,y1-(y1-y0)*.62)}ctx.stroke()}
+  ctx.restore();
+  return {x0,x1,y0,y1};
+}
+let parts=[];
+function draw(dt){
+  tAnim+=dt;const T=tAnim;
+  const isD=dark();
+  ctx.clearRect(0,0,W,H);
+  // cytosol
+  let g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,isD?'#3b2418':'#f8e3c9');g.addColorStop(1,isD?'#2a1810':'#ebc59c');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  // floating cytosol texture
+  for(let i=0;i<40;i++){const x=(i*173.3+T*6*(1+i%3))%W,y=(i*97.7)%H;ctx.fillStyle=isD?'rgba(255,200,150,.05)':'rgba(150,80,30,.06)';ctx.beginPath();ctx.arc(x,y,3+i%5,0,7);ctx.fill()}
+  // nucleus hint
+  ctx.fillStyle=isD?'rgba(120,90,160,.35)':'rgba(140,110,180,.25)';ctx.beginPath();ctx.ellipse(70,H*.2,70,45,0,0,7);ctx.fill();label('Nucleus',70,H*.2+4,isD?'#cbb':'#654',11);
+  const mw=Math.min(W*.62,640),mh=Math.min(H*.7,300),mx=W*.66,my=H*.55;
+  const M=mito(mx,my,mw,mh);
+  const s=S[cur];
+  const hi=(zone)=>{ctx.save();ctx.strokeStyle='#ffc83d';ctx.lineWidth=3;ctx.setLineDash([8,6]);ctx.lineDashOffset=-T*30;zone();ctx.stroke();ctx.restore()};
+  // zone labels
+  label('CYTOSOL',60,H-14,isD?'#d9b898':'#8a5a30',12,'left');
+  label('Outer membrane',mx-mw/2+60,my-mh/2-6,isD?'#e8b7a5':'#8a3d2a',11);
+  label('Intermembrane space (H⁺ high)',mx,my-mh/2+20,isD?'#f6d6c8':'#6a2a1c',10);
+  label('MATRIX',mx-mw*.12,my+mh*.36,isD?'#e0c9a0':'#6a5230',11);
+  label('Inner membrane (cristae)',mx+mw*.28,my+mh/2-4,isD?'#e8b7a5':'#8a3d2a',10);
+  const cxA=M.x0+(M.x1-M.x0)*.5,cyA=my;
+  const p=(f)=>((T*f)%1);
+  if(cur===0){
+    hi(()=>{ctx.beginPath();ctx.ellipse(W*.18,H*.58,W*.17,H*.34,0,0,7)});
+    // glucose splits
+    const ph=Math.min(1,(T%6)/6);
+    const gx=W*.1+ph*W*.1,gy=H*.28+ph*H*.3;
+    if(ph<.35){glucoseRing(W*.12,H*.3+ph*60,28,T);label('Glucose (6C)',W*.12,H*.3+ph*60+48,null,11)}
+    else{
+      const q=(ph-.35)/.65;
+      pyr(W*.1+q*W*.12,H*.55+q*20,10);pyr(W*.1+q*W*.12+10,H*.7+q*20,10);
+      label('2 Pyruvate',W*.15+q*W*.1,H*.85,null,11);
+    }
+    for(let i=0;i<4;i++){const a=((T*.4+i*.25)%1);if(ph>.3)atp(W*.05+i*45,H*.45-a*20,.9)}
+    label('Net +2 ATP  (4 made − 2 spent)',W*.18,H*.12,isD?'#ffc83d':'#9a6a00',14);
+    label('2 NADH →',W*.35,H*.45,'#2f7d9b',12);
+    // arrows into mito
+    ctx.strokeStyle=isD?'#ffd98a':'#8a4a10';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(W*.32,H*.6);ctx.lineTo(mx-mw/2-4,H*.6);ctx.stroke();label('pyruvate →',W*.36,H*.65,null,11);
+  }
+  else if(cur===1){
+    hi(()=>{rr(M.x0+8,M.y0+8,(M.x1-M.x0)-16,(M.y1-M.y0)-16,40)});
+    for(let i=0;i<2;i++){const a=p(.15)+i*.5;const k=a%1;const x=mx-mw/2-20+k*(mw*.35),y=my-20+i*40;pyr(x,y,9);
+      if(k>.6){co2(x+25,y-30-(k-.6)*60)}
+      if(k>.6)sphere(x+30,y,7,'#ffe9a0','#b8860b')}
+    label('Pyruvate → Acetyl-CoA',mx-mw*.1,my-mh*.1,null,12);
+    label('+ CO₂ released   + NADH',mx-mw*.1,my+mh*.1,isD?'#9fd4e6':'#1f6a85',12);
+    label('0 ATP directly',mx,my+mh*.28,isD?'#ffc83d':'#9a6a00',14);
+  }
+  else if(cur===2){
+    hi(()=>{rr(M.x0+8,M.y0+8,(M.x1-M.x0)-16,(M.y1-M.y0)-16,40)});
+    const rad=Math.min(mh*.28,70),cx=mx-mw*.05,cy=my;
+    ctx.strokeStyle=isD?'#e9b87a':'#a8672b';ctx.lineWidth=14;ctx.beginPath();ctx.arc(cx,cy,rad,0,7);ctx.stroke();
+    ctx.strokeStyle=isD?'#2c1a12':'#fff3d0';ctx.lineWidth=8;ctx.beginPath();ctx.arc(cx,cy,rad,0,7);ctx.stroke();
+    for(let i=0;i<8;i++){const a=T*.6+i*Math.PI/4;sphere(cx+Math.cos(a)*rad,cy+Math.sin(a)*rad,8,'#ffd98a','#c9701c')}
+    label('Citric acid cycle',cx,cy+4,null,12);
+    const k=(T*.5)%1;
+    sphere(cx-rad-60+k*60,cy-rad-6,7,'#ffe9a0','#b8860b');label('Acetyl-CoA',cx-rad-70,cy-rad-18,null,10);
+    for(let i=0;i<3;i++){const kk=(T*.35+i/3)%1;co2(cx+rad+10+kk*40,cy-rad+kk*-10-i*12)}
+    label('CO₂ ×4 total',cx+rad+55,cy-rad-30,null,11);
+    atp(cx+rad+30,cy+rad*.7,1.1);label('2 ATP/GTP',cx+rad+30,cy+rad*.7+24,isD?'#ffc83d':'#9a6a00',12);
+    label('6 NADH + 2 FADH₂ →',cx-rad-20,cy+rad+30,isD?'#9fd4e6':'#1f6a85',12);
+  }
+  else if(cur===3){
+    hi(()=>{ctx.beginPath();ctx.moveTo(M.x0+30,M.y1);ctx.lineTo(M.x1-30,M.y1)});
+    // membrane complexes
+    const yb=M.y1-4,ys=M.y0+4;
+    const bx=M.x0+(M.x1-M.x0)*.12;
+    const cw=(M.x1-M.x0)*.62;
+    const comps=[['I',0],['II',.2],['III',.45],['IV',.7]];
+    ctx.save();
+    comps.forEach((c,i)=>{const x=bx+cw*c[1]*1.3+10;
+      const gg=ctx.createLinearGradient(x,0,x+34,0);gg.addColorStop(0,'#4a8fb0');gg.addColorStop(1,'#1f5a78');ctx.fillStyle=gg;rr(x,yb-30,34,36,6);ctx.fill();
+      label(c[0],x+17,yb-8,'#fff',12);
+      if(c[0]!=='II'){for(let k=0;k<2;k++){const f=(T*.7+k*.5+i*.2)%1;sphere(x+8+k*18,yb-34-f*(yb-ys-60),3.5,'#fff','#e04a4a');}}
+    });
+    // ATP synthase
+    const sx=M.x1-(M.x1-M.x0)*.14;
+    ctx.fillStyle='#8a5aa8';rr(sx,yb-26,28,30,5);ctx.fill();
+    const rot=T*3;ctx.save();ctx.translate(sx+14,yb-44);ctx.rotate(rot);ctx.fillStyle='#d9a0e8';ctx.beginPath();ctx.arc(0,0,16,0,7);ctx.fill();ctx.fillStyle='#8a5aa8';ctx.fillRect(-2,-16,4,16);ctx.restore();
+    label('ATP synthase',sx+14,yb-70,isD?'#e6c4f2':'#5a3478',11);
+    for(let i=0;i<3;i++){const f=(T*.5+i/3)%1;sphere(sx+14,ys+40+f*(yb-ys-60),3.5,'#fff','#e04a4a');}
+    for(let i=0;i<3;i++){const f=(T*.5+i/3)%1;if(f>.7)atp(sx+14+(f-.7)*160,yb-90-(f-.7)*80,.9)}
+    ctx.restore();
+    label('NADH, FADH₂ ⟶ e⁻',bx-4,yb-90,isD?'#9fd4e6':'#1f6a85',11,'left');
+    label('H⁺ pumped out (red)',M.x0+(M.x1-M.x0)*.35,ys+60,isD?'#ff9a8a':'#b02a1a',11);
+    // electrons flow
+    ctx.strokeStyle='#ffe35a';ctx.lineWidth=2;ctx.setLineDash([4,5]);ctx.lineDashOffset=-T*30;ctx.beginPath();ctx.moveTo(bx+10,yb-38);ctx.lineTo(bx+cw*.7*1.3+40,yb-38);ctx.stroke();ctx.setLineDash([]);
+    // O2 -> H2O
+    const ox=bx+cw*.7*1.3+60,oy=yb-100;
+    sphere(ox,oy,9,'#ff7a7a','#a22');sphere(ox+13,oy,9,'#ff7a7a','#a22');label('O₂',ox+6,oy-14,null,11);
+    ctx.strokeStyle=isD?'#ddd':'#333';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(ox+6,oy+10);ctx.lineTo(ox+6,oy+34);ctx.stroke();
+    sphere(ox+6,oy+46,8,'#ff7a7a','#a22');sphere(ox-3,oy+54,5,'#eee','#999');sphere(ox+15,oy+54,5,'#eee','#999');
+    label('H₂O',ox+6,oy+72,null,11);
+    label('O₂ = final e⁻ acceptor',ox+6,oy-30,isD?'#ff9a8a':'#b02a1a',11);
+    label('≈25–26 ATP (indirect)',mx,my+mh*.05,isD?'#ffc83d':'#9a6a00',14);
+    label('MATRIX (H⁺ low)',mx,my+mh*.22,isD?'#e0c9a0':'#6a5230',10);
+  }
+  else{
+    // summary bars
+    const items=[['Glycolysis',2,'#e0a100','direct'],['Pyruvate ox.',0,'#999','direct'],['Citric acid cycle',2,'#d98324','direct'],['Oxid. phosph.',25.5,'#c4452b','indirect']];
+    const bx=W*.06,by=H*.18,bw=W*.42;
+    label('ATP per glucose (approximate)',bx,by-14,null,14,'left');
+    items.forEach((it,i)=>{const y=by+i*52;const prog=Math.min(1,T/1.2-i*.2);const w=Math.max(0,prog)*bw*it[1]/26;
+      label(it[0],bx,y+14,null,12,'left');
+      ctx.fillStyle=isD?'#3d3228':'#e4d6bc';rr(bx+110,y,bw,22,6);ctx.fill();
+      const gg=ctx.createLinearGradient(0,y,0,y+22);gg.addColorStop(0,it[2]);gg.addColorStop(1,'rgba(0,0,0,.35)');ctx.fillStyle=it[1]?it[2]:'#999';rr(bx+110,y,Math.max(2,w),22,6);ctx.fill();
+      label(it[1]===25.5?'≈25–26':it[1]+' ',bx+120+Math.max(2,w),y+16,null,12,'left')});
+    label('Direct (substrate-level): 4 ATP',bx,by+250,isD?'#ffc83d':'#9a6a00',13,'left');
+    label('Indirect (proton gradient): ≈25–26 ATP',bx,by+272,isD?'#ff9a8a':'#b02a1a',13,'left');
+    label('Total ≈ 29–30 ATP',bx,by+300,null,18,'left');
+    for(let i=0;i<12;i++){const a=(T*.3+i/12)%1;atp(mx-mw*.3+(i%6)*mw*.12,my-30+Math.floor(i/6)*60+Math.sin(T*2+i)*6,1.2)}
+    label('Glucose + 6 O₂ → 6 CO₂ + 6 H₂O + ATP',mx,my+mh*.42,null,12);
+  }
+}
+let last=performance.now();
+function loop(now){
+  const dt=Math.min(.05,(now-last)/1000);last=now;
+  if(playing)draw(dt);else draw(0);
+  requestAnimationFrame(loop);
+}
+document.addEventListener('visibilitychange',()=>{last=performance.now()});
+updateUI();requestAnimationFrame(loop);
+</script>
+</body>
+</html>

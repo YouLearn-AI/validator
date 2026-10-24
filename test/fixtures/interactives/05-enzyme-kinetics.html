@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Michaelis–Menten Kinetics</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Figtree:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f3efe6; --panel:#fbf8f1; --ink:#2a2520; --mute:#7a7064; --line:#d8cfbf;
+  --free:#1f6f6b; --inh:#c2410c; --accent:#b8860b; --grid:#e4dccb; --canvas:#fffdf8;
+  --shadow:0 1px 0 #fff inset,0 10px 30px -12px rgba(60,40,10,.25);
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#14181b;--panel:#1b2125;--ink:#e9e4d8;--mute:#97a09f;--line:#2e373c;
+  --free:#4fd1c5;--inh:#ff9a5c;--accent:#e8c067;--grid:#2a3338;--canvas:#171d20;
+  --shadow:0 1px 0 rgba(255,255,255,.04) inset,0 14px 34px -14px rgba(0,0,0,.7);}
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:'Figtree',sans-serif;font-size:15px}
+body{background:
+ radial-gradient(1200px 600px at 10% -10%,rgba(184,134,11,.10),transparent 60%),
+ radial-gradient(900px 500px at 100% 0%,rgba(31,111,107,.10),transparent 60%),var(--bg)}
+.app{max-width:1200px;margin:0 auto;padding:16px;display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px}
+@media(max-width:900px){.app{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:14px;animation:rise .6s both}
+.card:nth-child(2){animation-delay:.1s}.card:nth-child(3){animation-delay:.2s}
+@keyframes rise{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.plotwrap{position:relative;width:100%;aspect-ratio:16/10.5;min-height:300px}
+canvas{position:absolute;inset:0;width:100%;height:100%;border-radius:10px;background:var(--canvas);border:1px solid var(--line);cursor:crosshair;touch-action:none}
+.side{display:flex;flex-direction:column;gap:16px}
+.ctl{margin-bottom:12px}
+.ctl label{display:flex;justify-content:space-between;align-items:baseline;font-weight:600;font-size:13.5px;margin-bottom:4px}
+.ctl label b{font-family:'IBM Plex Mono',monospace;font-weight:500;color:var(--free)}
+.ctl.i label b{color:var(--inh)}
+.hint{font-size:12px;color:var(--mute);margin-top:2px;line-height:1.35}
+input[type=range]{width:100%;height:26px;appearance:none;background:transparent;cursor:pointer}
+input[type=range]::-webkit-slider-runnable-track{height:6px;border-radius:4px;background:linear-gradient(var(--line),var(--grid));box-shadow:inset 0 1px 2px rgba(0,0,0,.3)}
+input[type=range]::-moz-range-track{height:6px;border-radius:4px;background:var(--line)}
+input[type=range]::-webkit-slider-thumb{appearance:none;width:20px;height:20px;margin-top:-7px;border-radius:50%;border:2px solid #fff;background:radial-gradient(circle at 35% 30%,#fff 0,var(--free) 45%,#0e3f3c);box-shadow:0 2px 5px rgba(0,0,0,.45)}
+.i input[type=range]::-webkit-slider-thumb{background:radial-gradient(circle at 35% 30%,#fff 0,var(--inh) 45%,#6b2205)}
+input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;border:2px solid #fff;background:var(--free)}
+.i input[type=range]::-moz-range-thumb{background:var(--inh)}
+input[type=range]:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+button{font:600 13px 'Figtree',sans-serif;color:var(--ink);background:linear-gradient(var(--panel),var(--grid));border:1px solid var(--line);border-radius:9px;padding:7px 11px;cursor:pointer;box-shadow:0 2px 0 var(--line)}
+button:active{transform:translateY(1px);box-shadow:none}
+button[aria-pressed=true]{background:var(--free);color:#fff;border-color:var(--free)}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+.stat{border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--canvas)}
+.stat small{display:block;color:var(--mute);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.stat span{font-family:'IBM Plex Mono',monospace;font-size:15px}
+.stat.f span{color:var(--free)}.stat.h span{color:var(--inh)}
+.note{font-size:13px;line-height:1.5}
+.note h3{font:700 16px 'Fraunces',serif;margin:0 0 6px}
+.note p{margin:6px 0}
+.note em{color:var(--accent);font-style:normal;font-weight:600}
+.flask{margin-top:10px}
+#cap{font-size:13px;line-height:1.45;margin-top:10px;min-height:56px;padding:9px 11px;border-left:3px solid var(--accent);background:var(--canvas);border-radius:0 8px 8px 0}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;margin-top:8px;color:var(--mute)}
+.legend i{display:inline-block;width:22px;height:0;border-top:3px solid;vertical-align:middle;margin-right:5px}
+</style>
+</head>
+<body>
+<div class="app">
+ <div class="card">
+  <div class="plotwrap"><canvas id="plot" role="img" aria-label="Plot of reaction rate v versus substrate concentration [S] for uninhibited and competitively inhibited enzyme"></canvas></div>
+  <div class="legend">
+   <span><i style="border-color:var(--free)"></i>No inhibitor</span>
+   <span><i style="border-color:var(--inh)"></i>With competitive inhibitor</span>
+   <span><i style="border-top-style:dashed;border-color:var(--accent)"></i>Vmax and ½Vmax guides</span>
+  </div>
+  <div id="cap" aria-live="polite"></div>
+ </div>
+ <div class="side">
+  <div class="card">
+   <div class="ctl"><label for="km">Km <b id="kmv"></b></label>
+    <input type="range" id="km" min="0.5" max="20" step="0.1" value="5">
+    <div class="hint">[S] at which v = ½ Vmax. A smaller Km means half-maximal rate is reached at lower [S].</div></div>
+   <div class="ctl"><label for="vm">Vmax <b id="vmv"></b></label>
+    <input type="range" id="vm" min="20" max="200" step="1" value="100">
+    <div class="hint">Limiting rate at saturating [S]. It scales with the amount of active enzyme.</div></div>
+   <div class="ctl i"><label for="ii">Inhibitor, [I]/Ki <b id="iiv"></b></label>
+    <input type="range" id="ii" min="0" max="20" step="0.1" value="4">
+    <div class="hint">Competitive inhibitor concentration relative to its inhibition constant Ki. 0 = none.</div></div>
+   <div class="ctl"><label for="sp">Probe [S] <b id="spv"></b></label>
+    <input type="range" id="sp" min="0" max="100" step="0.5" value="10">
+    <div class="hint">Move along the curves, or click/drag on the plot.</div></div>
+   <div class="row">
+    <button id="ovr" aria-label="Increase substrate to overcome inhibition">Overcome with [S]</button>
+    <button id="rst" aria-label="Reset controls">Reset</button>
+    <button id="log" aria-pressed="false" aria-label="Toggle logarithmic substrate axis">Log [S] axis</button>
+   </div>
+  </div>
+  <div class="card">
+   <div class="stats">
+    <div class="stat f"><small>v, no inhibitor</small><span id="v0"></span></div>
+    <div class="stat h"><small>v, inhibited</small><span id="v1"></span></div>
+    <div class="stat"><small>Apparent Km</small><span id="kapp"></span></div>
+    <div class="stat"><small>Vmax (both)</small><span id="vmax2"></span></div>
+    <div class="stat" style="grid-column:span 2"><small>Rate retained (inhibited ÷ uninhibited)</small><span id="ret"></span></div>
+   </div>
+   <svg id="flask" class="flask" viewBox="0 0 300 120" width="100%" role="img" aria-label="Schematic of enzyme active sites occupied by substrate or inhibitor"></svg>
+  </div>
+  <div class="card note">
+   <h3>Reading the graph</h3>
+   <p><em>Km</em> is an operational constant: the [S] giving ½Vmax. It depends on the rate constants (k₁, k₋₁, k₂), so it is <em>not always</em> the binding dissociation constant.</p>
+   <p><em>Vmax</em> = kcat × [E]total: the ceiling when every enzyme is working.</p>
+   <p>A <em>competitive inhibitor</em> competes with substrate for the active site: apparent Km = Km(1 + [I]/Ki). Vmax is unchanged, but reaching it needs much more substrate. The curve shifts right, and more [S] outcompetes the inhibitor.</p>
+  </div>
+ </div>
+</div>
+<script>
+(function(){
+const $=id=>document.getElementById(id);
+const cv=$('plot'),ctx=cv.getContext('2d');
+const S={km:5,vm:100,ii:4,sp:10,log:false,smax:100};
+let W=0,H=0,dpr=1,anim=null;
+const pad={l:58,r:20,t:22,b:46};
+function css(n){return getComputedStyle(document.documentElement).getPropertyValue(n).trim()}
+function rate(s,km,vm){return vm*s/(km+s)}
+function kapp(){return S.km*(1+S.ii)}
+const fmt=(x,d=1)=>x.toFixed(d);
+
+function resize(){
+  dpr=window.devicePixelRatio||1;
+  const r=cv.getBoundingClientRect();W=r.width;H=r.height;
+  cv.width=Math.max(1,Math.round(W*dpr));cv.height=Math.max(1,Math.round(H*dpr));
+  ctx.setTransform(dpr,0,0,dpr,0,0);draw();
+}
+function xmap(s){
+  const w=W-pad.l-pad.r;
+  if(S.log){const lo=Math.log10(0.1),hi=Math.log10(S.smax);return pad.l+w*(Math.log10(Math.max(s,0.1))-lo)/(hi-lo)}
+  return pad.l+w*s/S.smax;
+}
+function sfromx(x){
+  const w=W-pad.l-pad.r,t=Math.min(1,Math.max(0,(x-pad.l)/w));
+  if(S.log){const lo=Math.log10(0.1),hi=Math.log10(S.smax);return Math.pow(10,lo+t*(hi-lo))}
+  return t*S.smax;
+}
+function ymap(v){return H-pad.b-(H-pad.t-pad.b)*v/(S.vm*1.1)}
+
+function curve(km,color,wid,glow){
+  ctx.beginPath();
+  const n=240;
+  for(let i=0;i<=n;i++){
+    const s=S.log?Math.pow(10,Math.log10(0.1)+(Math.log10(S.smax)-Math.log10(0.1))*i/n):S.smax*i/n;
+    const x=xmap(s),y=ymap(rate(s,km,S.vm));
+    i?ctx.lineTo(x,y):ctx.moveTo(x,y);
+  }
+  ctx.save();ctx.strokeStyle=color;ctx.lineWidth=wid;ctx.lineJoin='round';
+  if(glow){ctx.shadowColor=color;ctx.shadowBlur=10}
+  ctx.stroke();ctx.restore();
+}
+function dot(x,y,c){
+  ctx.beginPath();ctx.arc(x,y,6,0,7);
+  const g=ctx.createRadialGradient(x-2,y-2,1,x,y,7);g.addColorStop(0,'#fff');g.addColorStop(.4,c);g.addColorStop(1,c);
+  ctx.fillStyle=g;ctx.shadowColor='rgba(0,0,0,.4)';ctx.shadowBlur=5;ctx.fill();ctx.shadowBlur=0;
+  ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.stroke();
+}
+function label(t,x,y,c,al='left',font='500 12px IBM Plex Mono'){
+  ctx.font=font;ctx.textAlign=al;ctx.fillStyle=c;ctx.fillText(t,x,y);
+}
+function draw(){
+  if(!W)return;
+  const free=css('--free'),inh=css('--inh'),acc=css('--accent'),grid=css('--grid'),ink=css('--ink'),mute=css('--mute');
+  ctx.clearRect(0,0,W,H);
+  // grid
+  ctx.lineWidth=1;
+  const yt=5;
+  for(let i=0;i<=yt;i++){
+    const v=S.vm*1.1*i/yt,y=ymap(v);
+    ctx.strokeStyle=grid;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();
+    label(fmt(v,0),pad.l-8,y+4,mute,'right');
+  }
+  const xt=S.log?[0.1,1,10,100].filter(v=>v<=S.smax):[0,20,40,60,80,100];
+  xt.forEach(s=>{const x=xmap(s);ctx.strokeStyle=grid;ctx.beginPath();ctx.moveTo(x,pad.t);ctx.lineTo(x,H-pad.b);ctx.stroke();
+    label(String(s),x,H-pad.b+16,mute,'center')});
+  // axes
+  ctx.strokeStyle=ink;ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(pad.l,pad.t);ctx.lineTo(pad.l,H-pad.b);ctx.lineTo(W-pad.r,H-pad.b);ctx.stroke();
+  label('Substrate concentration [S] (mM)'+(S.log?', log scale':''),(pad.l+W-pad.r)/2,H-8,ink,'center','600 13px Figtree');
+  ctx.save();ctx.translate(14,(pad.t+H-pad.b)/2);ctx.rotate(-Math.PI/2);
+  label('Reaction rate v (µmol/min)',0,0,ink,'center','600 13px Figtree');ctx.restore();
+  // Vmax guide
+  const yV=ymap(S.vm),yH=ymap(S.vm/2);
+  ctx.setLineDash([6,5]);ctx.strokeStyle=acc;ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(pad.l,yV);ctx.lineTo(W-pad.r,yV);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(pad.l,yH);ctx.lineTo(W-pad.r,yH);ctx.stroke();
+  label('Vmax = '+fmt(S.vm,0),W-pad.r-4,yV-6,acc,'right');
+  label('½Vmax',pad.l+6,yH-6,acc);
+  // Km drop lines
+  const ka=kapp();
+  const xk=xmap(S.km);
+  ctx.strokeStyle=free;ctx.beginPath();ctx.moveTo(xk,yH);ctx.lineTo(xk,H-pad.b);ctx.stroke();
+  if(S.ii>0.05&&ka<=S.smax){const xa=xmap(ka);ctx.strokeStyle=inh;ctx.beginPath();ctx.moveTo(xa,yH);ctx.lineTo(xa,H-pad.b);ctx.stroke()}
+  ctx.setLineDash([]);
+  dot(xk,yH,free);
+  label('Km = '+fmt(S.km),xk+(xk>W-140?-8:8),H-pad.b-8,free,xk>W-140?'right':'left','600 12px IBM Plex Mono');
+  if(S.ii>0.05){
+    if(ka<=S.smax){const xa=xmap(ka);dot(xa,yH,inh);
+      label('apparent Km = '+fmt(ka),xa+(xa>W-170?-8:8),H-pad.b-24,inh,xa>W-170?'right':'left','600 12px IBM Plex Mono');}
+    else label('apparent Km = '+fmt(ka)+' (off scale →)',W-pad.r-4,H-pad.b-24,inh,'right','600 12px IBM Plex Mono');
+  }
+  // curves
+  if(S.ii>0.05)curve(ka,inh,3.2,true);
+  curve(S.km,free,3.2,true);
+  // probe
+  const s=S.sp,xs=xmap(s);
+  const v0=rate(s,S.km,S.vm),v1=rate(s,ka,S.vm);
+  ctx.strokeStyle=mute;ctx.setLineDash([2,4]);ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(xs,pad.t);ctx.lineTo(xs,H-pad.b);ctx.stroke();ctx.setLineDash([]);
+  if(S.ii>0.05){
+    ctx.strokeStyle=ink;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(xs+9,ymap(v0));ctx.lineTo(xs+9,ymap(v1));ctx.stroke();
+    dot(xs,ymap(v1),inh);
+  }
+  dot(xs,ymap(v0),free);
+  // stats
+  $('kmv').textContent=fmt(S.km)+' mM';$('vmv').textContent=fmt(S.vm,0);
+  $('iiv').textContent=fmt(S.ii);$('spv').textContent=fmt(S.sp)+' mM';
+  $('v0').textContent=fmt(v0);$('v1').textContent=fmt(v1);
+  $('kapp').textContent=fmt(ka)+' mM';$('vmax2').textContent=fmt(S.vm,0);
+  $('ret').textContent=fmt(100*v1/v0,0)+'%';
+  caption(v0,v1,ka);drawFlask(ka);
+}
+function caption(v0,v1,ka){
+  let t;
+  if(S.ii<0.05) t='No inhibitor: at [S] = Km the rate is exactly ½Vmax. Add inhibitor with the red slider to see the curve shift right.';
+  else if(S.sp>=ka*8) t='At high [S] the inhibitor is outcompeted: the rates converge towards the same Vmax ('+fmt(v1)+' vs '+fmt(v0)+'). Competitive inhibition is overcome by excess substrate.';
+  else if(S.sp<=S.km*0.6) t='At low [S] the inhibitor hurts most: the enzyme keeps only '+fmt(100*v1/v0,0)+'% of its uninhibited rate. Apparent Km rose from '+fmt(S.km)+' to '+fmt(ka)+' mM (×'+fmt(1+S.ii,1)+').';
+  else t='The inhibited curve is the same shape shifted right: same Vmax, but half-maximal rate now needs [S] = '+fmt(ka)+' mM instead of '+fmt(S.km)+' mM.';
+  $('cap').textContent=t;
+}
+// schematic of active sites
+const fl=$('flask');
+let seed=[];for(let i=0;i<24;i++)seed.push(Math.random());
+function drawFlask(ka){
+  const sFrac=S.sp/(S.km*(1+S.ii)+S.sp);   // occupied by substrate
+  const iFrac=S.ii>0?(S.ii*S.sp/ (S.sp+S.km*(1+S.ii)))/(1) :0; // illustrative share
+  const eFrac=(S.km*S.ii/ (S.km*(1+S.ii)+S.sp));
+  const n=12;let h='<defs><radialGradient id="eg" cx="35%" cy="30%"><stop offset="0" stop-color="#fff" stop-opacity=".7"/><stop offset="1" stop-color="var(--mute)" stop-opacity=".25"/></radialGradient></defs>';
+  const nS=Math.round(sFrac*n),nI=Math.round(eFrac*n);
+  for(let i=0;i<n;i++){
+    const x=26+(i%6)*50,y=34+Math.floor(i/6)*58;
+    h+=`<path d="M${x-18} ${y-14}a22 22 0 1 1 0 28 12 12 0 0 0 10-14 12 12 0 0 0-10-14z" fill="url(#eg)" stroke="var(--mute)" stroke-width="1.2"/>`;
+    if(i<nS)h+=`<circle cx="${x+6}" cy="${y}" r="7" fill="var(--free)" stroke="#fff" stroke-width="1"/>`;
+    else if(i<nS+nI)h+=`<rect x="${x-1}" y="${y-7}" width="14" height="14" rx="3" fill="var(--inh)" stroke="#fff" stroke-width="1"/>`;
+  }
+  h+=`<circle cx="22" cy="112" r="5" fill="var(--free)"/><text x="31" y="116" font-size="10" fill="var(--mute)" font-family="Figtree">substrate in active site</text>`;
+  h+=`<rect x="152" y="107" width="10" height="10" rx="2" fill="var(--inh)"/><text x="167" y="116" font-size="10" fill="var(--mute)" font-family="Figtree">inhibitor in active site</text>`;
+  fl.innerHTML=h;
+}
+// events
+function bind(id,key){$(id).addEventListener('input',e=>{S[key]=parseFloat(e.target.value);draw()})}
+bind('km','km');bind('vm','vm');bind('ii','ii');bind('sp','sp');
+function setProbe(x){
+  const r=cv.getBoundingClientRect();
+  let s=sfromx(x-r.left);s=Math.min(100,Math.max(0,s));S.sp=Math.round(s*2)/2;$('sp').value=S.sp;draw();
+}
+let drag=false;
+cv.addEventListener('pointerdown',e=>{drag=true;cv.setPointerCapture(e.pointerId);setProbe(e.clientX)});
+cv.addEventListener('pointermove',e=>{if(drag)setProbe(e.clientX)});
+cv.addEventListener('pointerup',()=>drag=false);
+cv.addEventListener('pointercancel',()=>drag=false);
+$('rst').onclick=()=>{if(anim)cancelAnimationFrame(anim);Object.assign(S,{km:5,vm:100,ii:4,sp:10});
+  ['km','vm','ii','sp'].forEach(k=>$(k).value=S[k]);draw()};
+$('log').onclick=e=>{S.log=!S.log;e.currentTarget.setAttribute('aria-pressed',S.log);draw()};
+$('ovr').onclick=()=>{
+  if(S.ii<0.05){S.ii=4;$('ii').value=4}
+  if(anim)cancelAnimationFrame(anim);
+  S.sp=0;let t0=null;const dur=4000;
+  (function step(ts){
+    if(t0===null)t0=ts;const p=Math.min(1,(ts-t0)/dur);
+    S.sp=100*p*p;$('sp').value=S.sp;draw();
+    if(p<1&&!document.hidden)anim=requestAnimationFrame(step);
+  })(performance.now());
+};
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&anim)cancelAnimationFrame(anim)});
+window.addEventListener('resize',resize);
+if(window.matchMedia)window.matchMedia('(prefers-color-scheme:dark)').addEventListener('change',draw);
+resize();
+requestAnimationFrame(resize);
+})();
+</script>
+</body>
+</html>

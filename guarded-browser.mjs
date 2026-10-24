@@ -158,6 +158,11 @@ export class GuardedBrowser {
     return this.launching.promise;
   }
 
+  /** Whether a Chromium is up and connected now (a request that finds one starts warm). */
+  running() {
+    return Boolean(this.current && this.current.browser.isConnected());
+  }
+
   /** A fresh context for one render; the caller closes it. */
   async newContext(options = {}) {
     const browser = await this.browser();
