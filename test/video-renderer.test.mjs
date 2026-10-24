@@ -136,6 +136,44 @@ const PAGES = {
       (function tick() { if (on) x = (x + 12) % 1080; c.fillStyle = '#fff'; c.fillRect(0, 0, el.width, el.height);
         c.fillStyle = '#c40'; c.fillRect(x, 100, 120, 120); requestAnimationFrame(tick); })();</script></body>`,
   // A scrolling page with a sticky sidebar column (40% of the width): in the page's flow, not docked over it.
+  // Plays from load; its first button pauses it, the second does nothing visible.
+  '/pause-first': `<!doctype html><body style="margin:0;background:#fff">
+    <button id="p" style="position:absolute;left:20px;top:20px">⏸ Pause</button>
+    <button style="position:absolute;left:140px;top:20px">Labels</button>
+    <canvas id="c" width="1200" height="630"></canvas>
+    <script>const c = document.getElementById('c').getContext('2d'); let x = 0, playing = true;
+      document.getElementById('p').onclick = () => { playing = !playing; };
+      (function tick() { if (playing) x = (x + 12) % 1080; c.fillStyle = '#fff'; c.fillRect(0, 0, 1200, 630);
+        c.fillStyle = '#c40'; c.fillRect(x, 250, 120, 120); requestAnimationFrame(tick); })();</script></body>`,
+  // Faint, small motion only: twelve light-grey 12 px dots drifting on white, as particles flow on a diagram.
+  '/faint-dots': `<!doctype html><body style="margin:0;background:#fff"><canvas id="c" width="1200" height="630"></canvas>
+    <script>const c = document.getElementById('c').getContext('2d'); let x = 0;
+      (function tick() { x = (x + 6) % 1000; c.fillStyle = '#fff'; c.fillRect(0, 0, 1200, 630); c.fillStyle = '#c8c8c8';
+        for (let i = 0; i < 12; i += 1) c.fillRect(100 + ((x + i * 83) % 1000), 40 + i * 45, 12, 12);
+        requestAnimationFrame(tick); })();</script></body>`,
+  // A 24 px counter that ticks every 0.1 s, and nothing else.
+  '/ticking': `<!doctype html><body style="margin:40px;font:24px sans-serif"><h1>Timer</h1><p>Elapsed: <b id="t">0.0</b> s</p>
+    <script>let n = 0; setInterval(() => { n += 0.1; document.getElementById('t').textContent = n.toFixed(1); }, 100);</script></body>`,
+  // A 32 px and a 64 px gradient spinner turning once every 0.4 s, and nothing else: smaller than a motion block.
+  '/spinners': `<!doctype html><style>@keyframes r { to { transform: rotate(360deg) } }
+    .s { border-radius: 50%; background: conic-gradient(#000, #fff); animation: r .4s linear infinite; margin: 20px }</style>
+    <body style="margin:40px;font:20px sans-serif"><h1>Loading</h1><div class="s" style="width:32px;height:32px"></div>
+    <div class="s" style="width:64px;height:64px;margin-left:600px"></div></body>`,
+  // Plays from load (a div moved each frame); its only control is a pause button with an SVG icon and no text.
+  '/pause-icon': `<!doctype html><body style="margin:0;background:#fff">
+    <button id="p" aria-label="Pause" style="position:absolute;left:20px;top:20px"><svg width="16" height="16"><rect width="5" height="16"/><rect x="10" width="5" height="16"/></svg></button>
+    <div id="b" style="position:absolute;top:250px;left:0;width:120px;height:120px;background:#c40"></div>
+    <script>let x = 0, playing = true; document.getElementById('p').onclick = () => { playing = !playing; };
+      (function tick() { if (playing) x = (x + 12) % 1080; document.getElementById('b').style.left = x + 'px';
+        requestAnimationFrame(tick); })();</script></body>`,
+  // Plays from load on a canvas, with a pause button over the canvas's centre.
+  '/pause-over': `<!doctype html><body style="margin:0;background:#fff">
+    <canvas id="c" width="1200" height="630"></canvas>
+    <button id="p" style="position:absolute;left:560px;top:295px;width:80px;height:40px">Pause</button>
+    <script>const c = document.getElementById('c').getContext('2d'); let x = 0, playing = true;
+      document.getElementById('p').onclick = () => { playing = !playing; };
+      (function tick() { if (playing) x = (x + 12) % 1080; c.fillStyle = '#fff'; c.fillRect(0, 0, 1200, 630);
+        c.fillStyle = '#c40'; c.fillRect(x, 100, 120, 120); requestAnimationFrame(tick); })();</script></body>`,
   '/sticky-column': `<!doctype html><body style="margin:0;display:flex;align-items:flex-start">
     <main style="flex:1;height:2000px;background:#eef"></main>
     <aside style="position:sticky;top:0;width:40%;height:100vh;background:#333"></aside></body>`,
@@ -328,6 +366,47 @@ describe('video renderer', { timeout: 300_000 }, () => {
       '-f', 'null', '-'], { encoding: 'utf8' });
     const yavg = Number(/YAVG=([0-9.]+)/.exec(luma.stdout)[1]);
     assert.ok(yavg > 200, `frame 0 luma ${yavg}: the ease was not run through`);
+  });
+
+  // Frames 20-100 of a clip that moved: after the click (tick 12) and before the fade, a paused page stands still.
+  const assertMovesAfterClick = (result, name) => {
+    assert.ok(result.video, JSON.stringify(result.meta));
+    const file = path.join(tmpDir, `${name}.mp4`);
+    fs.writeFileSync(file, result.video);
+    const out = spawnSync('ffmpeg', ['-hide_banner', '-i', file, '-vf', 'signalstats,metadata=mode=print:key=lavfi.signalstats.YDIF:file=-',
+      '-f', 'null', '-'], { encoding: 'utf8' }).stdout;
+    const after = [...out.matchAll(/YDIF=([0-9.]+)/g)].map((m) => Number(m[1])).slice(20, 100);
+    assert.ok(after.filter((v) => v > 0.3).length > 70, `moving frames after the click: ${after.filter((v) => v > 0.3).length}`);
+  };
+
+  test('a button that says pause is never pressed: the page that plays from load still moves after the click', async () => {
+    const result = await renderer()({ url: url('/pause-first') });
+    assert.equal(result.meta.actionKind, 'button');
+    assertMovesAfterClick(result, 'pause-first');
+  });
+
+  test('a pause button with only an icon is not pressed through its SVG, and no click lands on a pause over the canvas', async () => {
+    const icon = await renderer()({ url: url('/pause-icon') });
+    assert.equal(icon.meta.actionKind, 'none');
+    assertMovesAfterClick(icon, 'pause-icon');
+    const over = await renderer()({ url: url('/pause-over') });
+    assert.equal(over.meta.actionKind, 'none');
+    assertMovesAfterClick(over, 'pause-over');
+  });
+
+  test('faint motion spread over the frame counts: drifting light dots give a clip though their mean luma change is under the threshold', async () => {
+    const result = await renderer()({ url: url('/faint-dots') });
+    assert.ok(result.video, JSON.stringify(result.meta));
+    assert.ok(result.meta.motion.maxYdif < VIDEO_DEFAULTS.motionThreshold, JSON.stringify(result.meta.motion));
+    assert.ok(result.meta.motion.maxBlocks >= VIDEO_DEFAULTS.motionMinBlocks, JSON.stringify(result.meta.motion));
+  });
+
+  test('small motion is not motion: a ticking 24 px counter, or 32 px and 64 px spinners', async () => {
+    for (const page of ['/ticking', '/spinners']) {
+      const result = await renderer()({ url: url(page) });
+      assert.equal(result.reason, 'no_motion', `${page} ${JSON.stringify(result.meta)}`);
+      assert.ok(result.meta.motion.maxBlocks < VIDEO_DEFAULTS.motionMinBlocks, `${page} ${JSON.stringify(result.meta.motion)}`);
+    }
   });
 
   test('a page where nothing moves gives no video, only the frame', async () => {

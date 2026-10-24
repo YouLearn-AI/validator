@@ -7,8 +7,8 @@
 // costs. CSS animations and transitions are not driven by that clock: their timeline is held still (CDP
 // Animation.setPlaybackRate 0) and each step moves the Web Animations on by the same page time. The page is
 // shown as loaded, then the first control is used (the I-610 rule: a button whose label
-// says play/start/launch/..., else the first slider, else the first button, else the largest canvas or svg),
-// then the clip runs on. A motion check drops a clip whose frames don't change. The last 0.3 s fade back into
+// says play/start/launch/..., else the first slider, else the first button, else the largest canvas or svg; never
+// a button that says pause/stop/reset/clear, which would stop what the page already shows), then the clip runs on. A motion check drops a clip whose frames don't change. The last 0.3 s fade back into
 // frame 0, so the clip loops without a jump. H.264 High, yuv420p, faststart, no audio: what iMessage plays.
 //
 // The clock runs frame by frame (runFor fires every 16 ms animation frame on the way) while that is cheap, as it
@@ -72,9 +72,17 @@ export const VIDEO_DEFAULTS = Object.freeze({
   // The filmed frames go to ffmpeg as JPEG, not PNG: a PNG of a busy canvas took 167 ms against 56 ms (ops I-609,
   // a projectile interactive on a Mac), and its 120 PNGs passed the deadline on Cloud Run's 2 vCPU.
   frameQuality: 90,
-  // Motion check: per-frame mean change of luma (ffmpeg signalstats YDIF, 0-255). A caret or a ticking digit
-  // stays far under it; a moving shape does not. A clip needs MIN_MOVING_FRAMES frames over the threshold.
+  // Motion check: a frame moves when its mean change of luma (ffmpeg signalstats YDIF, 0-255) is over
+  // motionThreshold, or when motionMinBlocks or more blocks of a motionGrid have more than motionBlockShare of their
+  // pixels changed in luma by more than motionPixelLuma. The first catches a moving shape; the second faint motion
+  // spread over the frame that the mean misses, such as particles flowing on a diagram beside a pulsing 3D heart
+  // (5-28 blocks a frame at YDIF 0.09-2.3, ops I-609). Something smaller than a block (75x79 px), a spinner, a
+  // ticking digit or a caret, touches at most 4 and stays under both. A clip needs minMovingFrames.
   motionThreshold: 0.3,
+  motionGrid: Object.freeze({ cols: 16, rows: 8 }),
+  motionBlockShare: 0.01,
+  motionPixelLuma: 12,
+  motionMinBlocks: 5,
   minMovingFrames: 3,
   maxrate: '4M',
   bufsize: '8M',
@@ -90,6 +98,9 @@ export const VIDEO_DEFAULTS = Object.freeze({
 const FFMPEG_KILL_GRACE_MS = 2_000;
 
 const PREFER = /\b(play|start|run|launch|fire|step|next|search|go|check|begin|animate|simulate|throw|shoot|explore|try|balance|compare)\b/i;
+// A control that stops or clears what the page shows is never pressed: a heart interactive's first button was
+// "⏸ Pause", and the clip of it paused had no motion (ops I-609).
+const AVOID = /⏸|⏹|\b(pause|stop|halt|freeze|reset|clear)\b/i;
 
 export class RenderBusy extends Error {
   constructor() {
@@ -141,8 +152,9 @@ function stepAnimations(dt) {
 }
 
 // Runs in the page: the control to use, as the I-610 harness picks it.
-function pickControl(preferSource) {
+function pickControl({ preferSource, avoidSource }) {
   const prefer = new RegExp(preferSource, 'i');
+  const avoid = new RegExp(avoidSource, 'i');
   const visible = (el) => {
     const r = el.getBoundingClientRect();
     const s = getComputedStyle(el);
@@ -151,8 +163,8 @@ function pickControl(preferSource) {
   };
   const label = (el) => (el.innerText || el.value || el.getAttribute('aria-label') || el.title || el.tagName)
     .trim().replace(/\s+/g, ' ').slice(0, 60);
-  const buttons = [...document.querySelectorAll('button,[role=button],input[type=button],input[type=submit]')]
-    .filter(visible).filter((b) => !b.disabled);
+  const BUTTONS = 'button,[role=button],input[type=button],input[type=submit]';
+  const buttons = [...document.querySelectorAll(BUTTONS)].filter(visible).filter((b) => !b.disabled && !avoid.test(label(b)));
   let el = buttons.find((b) => prefer.test(label(b)));
   let kind = 'button';
   if (!el) {
@@ -162,13 +174,19 @@ function pickControl(preferSource) {
   if (!el && buttons.length) el = buttons[0];
   if (!el) {
     const area = (e) => e.getBoundingClientRect().width * e.getBoundingClientRect().height;
-    const surface = [...document.querySelectorAll('canvas,svg')].filter(visible).sort((a, b) => area(b) - area(a))[0];
+    const surface = [...document.querySelectorAll('canvas,svg')].filter(visible).filter((e) => !e.closest(BUTTONS))
+      .sort((a, b) => area(b) - area(a))[0];
     if (surface) { el = surface; kind = 'canvas/svg'; }
   }
   if (!el) return null;
   const r = el.getBoundingClientRect();
+  const x = r.left + r.width / 2;
+  const y = r.top + r.height / 2;
+  // Nothing is pressed when an avoided control lies over that point (a pause button over the canvas).
+  const hit = document.elementFromPoint(x, y)?.closest(BUTTONS);
+  if (hit && avoid.test(label(hit))) return null;
   // The label stays in the page: it is the page's text, and nothing outside needs it.
-  return { kind, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  return { kind, x, y };
 }
 
 // Runs in the page: the share of the viewport (0-1) whose topmost element is in a docked panel, a box with
@@ -269,13 +287,26 @@ function run(command, args, { signal } = {}) {
   });
 }
 
-/** Per-frame YDIF (mean absolute luma change from the previous frame) of the frames in `dir`. */
-async function motionOf(ffmpeg, dir, fps, signal) {
-  const out = await run(ffmpeg, [
-    '-hide_banner', '-loglevel', 'error', '-framerate', String(fps), '-i', path.join(dir, 'f%04d.jpg'),
-    '-vf', 'signalstats,metadata=mode=print:key=lavfi.signalstats.YDIF:file=-', '-f', 'null', '-',
-  ], { signal });
-  return [...out.matchAll(/lavfi\.signalstats\.YDIF=([0-9.]+)/g)].map((m) => Number(m[1]));
+/**
+ * The motion of the frames in `dir`, frame by frame from the second: `ydif`, the mean absolute luma change from
+ * the frame before (0-255), and `blocks`, how many blocks of a cols x rows grid have more than `blockShare` of their
+ * pixels changed in luma by more than `luma`.
+ */
+async function motionOf(ffmpeg, dir, fps, { luma, blockShare, grid }, signal) {
+  const input = ['-hide_banner', '-loglevel', 'error', '-framerate', String(fps), '-i', path.join(dir, 'f%04d.jpg')];
+  const values = (out, key) => [...out.matchAll(new RegExp(`lavfi\\.signalstats\\.${key}=([0-9.]+)`, 'g'))].map((m) => Number(m[1]));
+  const ydif = values(await run(ffmpeg, [...input,
+    '-vf', 'signalstats,metadata=mode=print:key=lavfi.signalstats.YDIF:file=-', '-f', 'null', '-'], { signal }), 'YDIF');
+  // The difference of each frame from the one before, white where it is over `luma`, averaged over each block
+  // (area scaling to the grid), then white where a block's share is over `blockShare`: the mean, times the number of
+  // blocks, is the count.
+  const cells = grid.cols * grid.rows;
+  const blocks = values(await run(ffmpeg, [...input,
+    '-vf', `format=gray,tblend=all_mode=difference,lut=y='if(gt(val,${luma}),255,0)',scale=${grid.cols}:${grid.rows}:flags=area,`
+      + `lut=y='if(gt(val,${255 * blockShare}),255,0)',signalstats,metadata=mode=print:key=lavfi.signalstats.YAVG:file=-`,
+    '-f', 'null', '-'], { signal }), 'YAVG').map((v) => Math.round((v / 255) * cells));
+  // signalstats gives the first frame a YDIF of 0; tblend starts at the second frame.
+  return { ydif: ydif.slice(1), blocks };
 }
 
 /**
@@ -480,7 +511,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       if (!picked && tick >= before) {
         picked = true;
         // What the page returns is the page's: only a known kind and a point inside the viewport are used.
-        target = sanitizeTarget(await page.evaluate(pickControl, PREFER.source), viewport.width, viewport.height);
+        target = sanitizeTarget(await page.evaluate(pickControl, { preferSource: PREFER.source, avoidSource: AVOID.source }), viewport.width, viewport.height);
         if (target) {
           await page.mouse.click(target.x, target.y);
           actionKind = target.kind;
@@ -551,9 +582,12 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     }
 
     progress.stage = 'motion';
-    const ydif = await motionOf(ffmpeg, dir, fps, signal);
-    const movingFrames = ydif.filter((v) => v > o.motionThreshold).length;
-    const motion = { maxYdif: Math.max(0, ...ydif), movingFrames, threshold: o.motionThreshold };
+    const { ydif, blocks } = await motionOf(ffmpeg, dir, fps,
+      { luma: o.motionPixelLuma, blockShare: o.motionBlockShare, grid: o.motionGrid }, signal);
+    const movingFrames = ydif.filter((v, i) => v > o.motionThreshold || blocks[i] >= o.motionMinBlocks).length;
+    const motion = {
+      maxYdif: Math.max(0, ...ydif), maxBlocks: Math.max(0, ...blocks), movingFrames, threshold: o.motionThreshold,
+    };
     const meta = { ...base, frames: kept.length, seconds: kept.length / fps, motion };
     if (movingFrames < o.minMovingFrames) {
       return { video: null, frame: frame0Jpeg, reason: 'no_motion', meta: { ...meta, totalMs: Date.now() - t0 } };
@@ -609,6 +643,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       const { meta } = result;
       log.info(`[RENDER_VIDEO] host=${meta.url_host} video=${Boolean(result.video)} reason=${result.reason || '-'} `
         + `action=${meta.actionKind} max_ydif=${meta.motion ? meta.motion.maxYdif.toFixed(2) : '-'} `
+        + `max_blocks=${meta.motion ? meta.motion.maxBlocks : '-'} `
         + `moving=${meta.motion ? meta.motion.movingFrames : '-'} fps=${meta.fps} frames=${meta.frames} `
         + `frame_ms=${meta.frameMs ?? '-'} docked=${Math.round(meta.dockedShare * 100)} layout=${meta.layout} `
         + `ms=${meta.totalMs} bytes=${meta.bytes || 0}`);
