@@ -62,6 +62,15 @@ const PAGES = {
   errorFlood: page(`<button id="b">Start</button><p>Flooding</p><script>
     document.getElementById('b').onclick = () => { throw new TypeError('the button broke'); };
     (function tick() { requestAnimationFrame(tick); throw new Error('every frame'); })();</script>`),
+  // A caption running past a narrow inline <svg>: the svg's viewport cuts it, inline or not.
+  inlineSvg: page(`<p>Before <svg width="120" height="40" style="display:inline;vertical-align:middle">
+    <text x="10" y="25" font-size="16">A caption far too long for this</text></svg> after</p>`),
+  // Canvas text drawn wholly past a 100 px canvas, beside HTML text where it would land: not painted, no finding.
+  pastCanvas: page(`<div style="position:relative;height:60px"><canvas id="c" width="100" height="40"></canvas>
+    <span style="position:absolute;left:130px;top:12px;font-size:16px">Readout label</span></div><script>
+    const c = document.getElementById('c').getContext('2d'); c.font = '16px sans-serif';
+    function draw() { c.clearRect(0, 0, 100, 40); c.fillText('Hidden caption', 130, 26); requestAnimationFrame(draw); }
+    draw();</script>`),
   // Spins forever once loaded.
   hang: page('<p>Spins</p><script>setTimeout(() => { for (;;) {} }, 200);</script>'),
 };
@@ -257,6 +266,34 @@ describe('layout check (Chromium)', { timeout: 300_000 }, () => {
   test('text cut by its own overflow-hidden box is "cut"', async () => {
     const r = await checker()({ html: PAGES.clipSelf });
     assert.deepEqual(r.findings.filter((f) => f.type === 'cut').map((f) => f.width).sort(), [1280, 390], JSON.stringify(r.findings));
+  });
+
+  test('a caption past a narrow inline <svg> is "cut" by its viewport', async () => {
+    const r = await checker()({ html: PAGES.inlineSvg });
+    assert.ok(r.findings.some((f) => f.type === 'cut' && f.kind === 'svg'), JSON.stringify(r.findings));
+  });
+
+  test('canvas text drawn wholly past its canvas is neither cut nor overlapping', async () => {
+    const r = await checker()({ html: PAGES.pastCanvas });
+    assert.deepEqual(r.findings, []);
+  });
+
+  test('a refused request names no host in the checker\'s logs (a hostname can hold page text)', async () => {
+    const out = [];
+    const log = { info: (l) => out.push(l), warn: (l) => out.push(l), error: (l) => out.push(l), log: (l) => out.push(l) };
+    const hostless = new GuardedBrowser({ guard: { lookup, connect, logHosts: false }, log, killable: true });
+    try {
+      const html = page(`<p>Reaching out</p><img src="http://page-text-secret-4410.localhost/x.png">
+        <img src="http://10.1.2.3/page-text-secret-4411.png">`);
+      const r = await createLayoutChecker(hostless, { options: FAST, log })({ html });
+      assert.equal(r.status, 'ok');
+    } finally {
+      await hostless.close();
+    }
+    const logged = out.join('\n');
+    assert.match(logged, /\[EGRESS_REFUSED\] reason=loopback host=-/);
+    assert.match(logged, /\[EGRESS_REFUSED\] reason=private host=-/);
+    assert.ok(!logged.includes('page-text-secret'), 'a page-chosen host reached a log');
   });
 
   test('text scrolled out of a clipping box overlaps nothing', async () => {

@@ -238,7 +238,7 @@ function measure() {
   const visible = (el) => { for (let e = el; e && e.nodeType === 1; e = e.parentElement) { const cs = getComputedStyle(e); if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) < 0.15) return false; if (cs.clipPath && /inset\((50|100)%/.test(cs.clipPath)) return false; if (cs.position === "absolute" && cs.clip && cs.clip.startsWith("rect(0")) return false; } return true; };
   // clip rect of a label: the intersection of its own element (a text's container clips it too; a canvas's own box is
   // the canvas-edge check) and its ancestors with overflow other than visible, and any ancestor <svg>. Overflow does
-  // not apply to inline boxes, so they never clip.
+  // not apply to inline HTML boxes, so they never clip; an <svg> clips to its viewport however it is displayed.
   const clips = new Map();
   const clipOf = (el, self) => {
     const memo = `${self}`;
@@ -248,8 +248,9 @@ function measure() {
     let c = { l: -1e9, t: -1e9, r: 1e9, b: 1e9, by: null };
     for (let e = self ? el : el.parentElement; e && e !== document.documentElement; e = e.parentElement) {
       const cs = getComputedStyle(e);
-      if (cs.display === "inline") continue;
       const isSvgRoot = e.tagName.toLowerCase() === "svg" && cs.overflow !== "visible";
+      // an <svg> clips to its viewport even when displayed inline
+      if (!isSvgRoot && cs.display === "inline") continue;
       const clips = isSvgRoot || ["hidden", "clip"].includes(cs.overflowX) || ["hidden", "clip"].includes(cs.overflowY);
       if (!clips) continue;
       const r = e.getBoundingClientRect();
@@ -301,12 +302,21 @@ function measure() {
   for (const L of labels) {
     const c = clipOf(L.el, L.kind !== "canvas");
     const v = [Math.max(L.box[0], c.l, 0), Math.max(L.box[1], c.t), Math.min(L.box[2], c.r, W), Math.min(L.box[3], c.b)];
+    if (L.kind === "canvas") {
+      // a canvas shows only its bitmap: text drawn past it is not painted
+      const r = L.el.getBoundingClientRect();
+      v[0] = Math.max(v[0], r.left); v[1] = Math.max(v[1], r.top); v[2] = Math.min(v[2], r.right); v[3] = Math.min(v[3], r.bottom);
+    }
     L.vis = v[2] - v[0] > 1 && v[3] - v[1] > 1 ? v : null;
   }
   // cut text
   for (const L of labels) {
     const [l, t, r, b] = L.box;
-    if (L.kind === "canvas" && L.cutBy.length) { out.push({ type: "cut", where: L.cutBy[0], text: L.text, kind: L.kind, box: L.box }); continue; }
+    if (L.kind === "canvas" && L.cutBy.length) {
+      // drawn wholly past the canvas: not shown at all, as text scrolled out of a clipping box
+      if (L.vis) out.push({ type: "cut", where: L.cutBy[0], text: L.text, kind: L.kind, box: L.box });
+      continue;
+    }
     const c = clipOf(L.el, L.kind !== "canvas");
     const vis = { l: Math.max(c.l, 0), r: Math.min(c.r, W), t: c.t, b: c.b };
     const outX = Math.max(0, vis.l - l) + Math.max(0, r - vis.r), outY = Math.max(0, c.t - t) + Math.max(0, b - c.b);

@@ -6,9 +6,11 @@ import { createLayoutChecker } from './layout-check.mjs';
 import { errorCode } from './request-errors.mjs';
 
 // As in video-server.mjs: a Chromium that never gets ready is ended by exiting the process (Playwright's exit
-// handler kills it), and Cloud Run starts a fresh instance.
+// handler kills it), and Cloud Run starts a fresh instance. The pages are model-written HTML, which can put its
+// text in a hostname: the egress guard's refusals name no host here.
 const browser = new GuardedBrowser({
   killable: true,
+  guard: { logHosts: false },
   onStuckLaunch: () => {
     // eslint-disable-next-line no-console
     console.error('[CHECK_LAYOUT] restarting the instance: Chromium did not start');
