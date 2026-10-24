@@ -15,7 +15,9 @@ import { UrlRefused } from '../egress-guard.mjs';
 import { chromium } from 'playwright';
 import { GuardedBrowser } from '../guarded-browser.mjs';
 import { createVideoApp } from '../video-app.mjs';
-import { createVideoRenderer, RenderBusy, RenderTimeout, sanitizeTarget } from '../video-renderer.mjs';
+import {
+  createVideoRenderer, encodeLoop, fitCapture, RenderBusy, RenderTimeout, sanitizeTarget, VIDEO_DEFAULTS,
+} from '../video-renderer.mjs';
 
 const FAKE_PUBLIC = '93.184.216.34';
 const KEY = 'test-video-key-0123456789';
@@ -83,6 +85,24 @@ const PAGES = {
       function tick(t) { c.fillStyle = '#fff'; c.fillRect(0, 0, 1200, 630); c.fillStyle = '#093';
         c.fillRect(((t - t0) / 3) % 1080, 250, 120, 120); requestAnimationFrame(tick); }
       requestAnimationFrame(tick);</script></body>`,
+  // Draws slowly, as a WebGL scene drawn in software does: each animation frame holds the page for ?draw= ms of
+  // real time (a synchronous request the server answers that late; the page's own clocks are the fake ones). The
+  // square moves by page time (the frame's timestamp), as three.js pages do. It counts its draws in the title.
+  '/slow-draw': `<!doctype html><body style="margin:0;background:#fff"><canvas id="c" width="1200" height="630"></canvas><script>
+      const draw = new URLSearchParams(location.search).get('draw') || '100';
+      const c = document.getElementById('c').getContext('2d'); let draws = 0;
+      function tick(t) { const x = new XMLHttpRequest(); x.open('GET', '/delay?ms=' + draw, false); x.send();
+        draws += 1; document.title = String(draws);
+        c.fillStyle = '#fff'; c.fillRect(0, 0, 1200, 630); c.fillStyle = '#c40'; c.fillRect((t / 3) % 1080, 250, 120, 120);
+        requestAnimationFrame(tick); }
+      requestAnimationFrame(tick);</script></body>`,
+  // Turns from black to white over 1 s of its own time, which moves by at most 50 ms a frame (as generated pages
+  // clamp their time step): frame 0, 1.5 s after load, is white only if the settle ran every frame.
+  '/ease': `<!doctype html><body style="margin:0;background:#000"><div id="w" style="position:fixed;inset:0;background:#fff;opacity:0"></div>
+    <script>let last = performance.now(), t = 0;
+      function tick(now) { t += Math.min(0.05, (now - last) / 1000); last = now;
+        document.getElementById('w').style.opacity = String(Math.min(1, t)); requestAnimationFrame(tick); }
+      requestAnimationFrame(tick);</script></body>`,
   // Every frame new noise: the worst case for the clip's size.
   '/noise': `<!doctype html><body style="margin:0"><canvas id="c" width="1200" height="630"></canvas><script>
       const c = document.getElementById('c').getContext('2d'); const img = c.createImageData(1200, 630);
@@ -144,7 +164,11 @@ describe('video renderer', { timeout: 300_000 }, () => {
       <button onclick="document.body.style.background='#f00'">Start</button></body>`;
     origin = http.createServer((req, res) => {
       if (req.url.startsWith('/stall')) return; // never answers: the navigation times out
-      const page = PAGES[req.url];
+      if (req.url.startsWith('/delay')) {
+        const ms = Number(new URL(req.url, 'http://x').searchParams.get('ms'));
+        return setTimeout(() => res.writeHead(200, { 'content-type': 'text/plain' }).end('ok'), ms);
+      }
+      const page = PAGES[req.url.split('?')[0]];
       if (!page) return res.writeHead(404).end();
       return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(page);
     });
@@ -253,6 +277,16 @@ describe('video renderer', { timeout: 300_000 }, () => {
     await assert.rejects(stuck({ url: 'http://stuck.test/' }), RenderTimeout);
   });
 
+  test('a cheap page settles frame by frame: an ease clamped to 50 ms a frame is done by frame 0', async () => {
+    const result = await renderer()({ url: url('/ease') });
+    const file = path.join(tmpDir, 'ease.jpg');
+    fs.writeFileSync(file, result.frame);
+    const luma = spawnSync('ffmpeg', ['-hide_banner', '-i', file, '-vf', 'signalstats,metadata=mode=print:key=lavfi.signalstats.YAVG:file=-',
+      '-f', 'null', '-'], { encoding: 'utf8' });
+    const yavg = Number(/YAVG=([0-9.]+)/.exec(luma.stdout)[1]);
+    assert.ok(yavg > 200, `frame 0 luma ${yavg}: the ease was not run through`);
+  });
+
   test('a page where nothing moves gives no video, only the frame', async () => {
     const result = await renderer()({ url: url('/static') });
     assert.equal(result.video, null);
@@ -275,10 +309,44 @@ describe('video renderer', { timeout: 300_000 }, () => {
   });
 
   test('a page that hangs is ended at the deadline and the renderer recovers', async () => {
-    const render = renderer({ deadlineMs: 8000 });
+    // A short deadline, with the budget's reserve cut to match, so the filming reaches the click that hangs.
+    const render = renderer({ deadlineMs: 8000, reserveMs: 1000 });
     await assert.rejects(render({ url: url('/hang') }), RenderTimeout);
     const next = await render({ url: url('/moving') });
     assert.ok(next.video);
+  });
+
+  test('a page that draws slowly is filmed at a lower frame rate by the deadline, and still loops to frame 0', async () => {
+    // Each frame costs a draw of 120 ms and its screenshot: the 120 frames at 30 fps would need about 20 s, and
+    // the budget gives about 12 s. The settle is one draw, not the 94 of every 16 ms frame.
+    const t0 = Date.now();
+    const result = await renderer({ deadlineMs: 16_000, reserveMs: 3000 })({ url: url('/slow-draw?draw=120') });
+    const took = Date.now() - t0;
+    assert.ok(result.video, JSON.stringify(result.meta));
+    assert.ok([15, 10].includes(result.meta.fps), `fps ${result.meta.fps}`);
+    assert.ok(took < 16_000, `took ${took} ms`);
+    const file = path.join(tmpDir, 'slow.mp4');
+    fs.writeFileSync(file, result.video);
+    const [v] = probe(file).streams;
+    assert.equal(v.r_frame_rate, `${result.meta.fps}/1`);
+    assert.equal(Number(v.nb_read_frames), result.meta.frames);
+    assert.ok(result.meta.seconds >= 2, `${result.meta.seconds} s`);
+    const frame = (n, out) => execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', file,
+      '-vf', `select=eq(n\\,${n})`, '-fps_mode', 'passthrough', '-frames:v', '1', out]);
+    frame(0, path.join(tmpDir, 'slow-first.png'));
+    frame(result.meta.frames - 1, path.join(tmpDir, 'slow-last.png'));
+    const ssim = spawnSync('ffmpeg', ['-hide_banner', '-i', path.join(tmpDir, 'slow-first.png'), '-i', path.join(tmpDir, 'slow-last.png'),
+      '-lavfi', 'ssim', '-f', 'null', '-'], { encoding: 'utf8' }).stderr;
+    assert.ok(Number(/All:([0-9.]+)/.exec(ssim)[1]) > 0.99, ssim);
+  });
+
+  test('a page too slow for even a 2 s clip at 10 fps answers "too_slow" with its first frame, before the deadline', async () => {
+    const t0 = Date.now();
+    const result = await renderer({ deadlineMs: 12_000, reserveMs: 3000 })({ url: url('/slow-draw?draw=700') });
+    assert.equal(result.reason, 'too_slow', JSON.stringify(result.meta));
+    assert.equal(result.video, null);
+    assert.deepEqual(jpegSize(result.frame), { width: 1200, height: 630 });
+    assert.ok(Date.now() - t0 < 12_000, `took ${Date.now() - t0} ms`);
   });
 
   test('one render at a time', async () => {
@@ -447,10 +515,33 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
   const publicLookup = async () => [{ address: FAKE_PUBLIC, family: 4 }];
   const silent = { info() {}, warn() {}, error() {}, log() {} };
 
-  function fakeBrowser({ closeHangs = false, screenshotDelayMs = 0, gotoHangs = false } = {}) {
-    const state = { resets: 0, shots: 0 };
+  // Two small real JPEGs, a red and a blue frame, made once.
+  let images;
+  async function frameImages() {
+    if (images) return images;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-fake-'));
+    try {
+      images = ['red', 'blue'].map((color) => {
+        const file = path.join(dir, `${color}.jpg`);
+        execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i', `color=c=${color}:s=320x180`, '-frames:v', '1', file]);
+        return fs.readFileSync(file);
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    return images;
+  }
+
+  // images: what the screenshots return in turn (real JPEGs, for a render that reaches ffmpeg).
+  // The clock's steps are recorded as [kind, ms]; stepDelayMs is what each costs (a draw).
+  function fakeBrowser({ closeHangs = false, screenshotDelayMs = 0, gotoHangs = false, stepDelayMs = 0, images = null } = {}) {
+    const state = { resets: 0, shots: 0, steps: [] };
+    const step = (kind) => async (ms) => {
+      state.steps.push([kind, ms]);
+      await new Promise((r) => setTimeout(r, stepDelayMs));
+    };
     const page = {
-      clock: { install: async () => {}, pauseAt: async () => {}, runFor: async () => {} },
+      clock: { install: async () => {}, pauseAt: async () => {}, runFor: step('runFor'), fastForward: step('fastForward') },
       goto: () => (gotoHangs ? new Promise(() => {}) : Promise.resolve()),
       evaluate: async () => null,
       mouse: { click: async () => {} },
@@ -463,7 +554,7 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
           fs.mkdirSync(path.dirname(file), { recursive: true });
           fs.writeFileSync(file, 'png');
         }
-        return Buffer.from('img');
+        return images ? images[state.shots % images.length] : Buffer.from('img');
       },
     };
     const context = {
@@ -501,7 +592,8 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     assert.ok(lines.includes('[RENDER_VIDEO] timeout stage=navigate frame=- ms=300'), lines.join('\n'));
 
     lines.length = 0;
-    const slow = createVideoRenderer(fakeBrowser({ screenshotDelayMs: 100 }), {
+    // The deadline falls on the second frame, before the budget has timed enough frames to decide.
+    const slow = createVideoRenderer(fakeBrowser({ screenshotDelayMs: 200 }), {
       checkOptions: { lookup: publicLookup }, options: { deadlineMs: 450, teardownMs: 1000 }, log,
     });
     await assert.rejects(slow({ url: 'http://public.test/?token=secret' }), RenderTimeout);
@@ -533,6 +625,136 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     assert.ok(browser.state.shots > 0, 'a screenshot was in flight at the deadline');
     const left = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('i609-') && !before.has(n));
     assert.deepEqual(left, [], `left behind: ${left}`);
+  });
+
+  test('a page too slow for 30 fps is filmed slower: the whole 4 s clip, one fastForward per frame, in whole ms', async () => {
+    const browser = fakeBrowser({ screenshotDelayMs: 25, stepDelayMs: 25, images: await frameImages() });
+    // The settle's own budget is out of the way here (its timing has its own test).
+    const render = createVideoRenderer(browser, {
+      checkOptions: { lookup: publicLookup }, options: { deadlineMs: 6000, reserveMs: 1500, settleBudgetMs: 10_000 }, log: silent,
+    });
+    // ~50 ms a frame: 117 frames left at 30 fps need ~6 s, the 58 left at 15 fps ~3 s; the budget is ~4.5 s.
+    // (15 fps on a quiet machine; 10 fps is right too when its timers fire late.)
+    const result = await render({ url: 'http://public.test/' });
+    assert.ok(result.video, JSON.stringify(result.meta));
+    assert.ok([15, 10].includes(result.meta.fps), JSON.stringify(result.meta));
+    assert.equal(result.meta.frames, 4 * result.meta.fps);
+    assert.equal(result.meta.seconds, 4);
+    const { steps } = browser.state;
+    assert.ok(steps.every(([, ms]) => Number.isInteger(ms) && ms > 0), JSON.stringify(steps));
+    // The settle frame by frame (slices of 32, 64, ... ms), the first three frames too; once the clip drops, one
+    // fastForward per frame.
+    assert.deepEqual(steps.slice(0, 6), [['runFor', 32], ['runFor', 64], ['runFor', 128], ['runFor', 256], ['runFor', 512], ['runFor', 508]]);
+    assert.deepEqual(steps.slice(6, 8).map(([kind]) => kind), ['runFor', 'runFor']);
+    assert.ok(steps.length > 8 && steps.slice(8).every(([kind]) => kind === 'fastForward'), JSON.stringify(steps.slice(8, 12)));
+    // The last frame (tick 118 at 15 fps, 117 at 10) is exactly that page time after load, to the millisecond.
+    const lastTick = 120 - 30 / result.meta.fps;
+    assert.equal(steps.reduce((sum, [, ms]) => sum + ms, 0), 1500 + Math.round((lastTick * 1000) / 30));
+  });
+
+  test('a page whose settle is slow jumps the rest of it, and its frames are stepped one draw each', async () => {
+    const browser = fakeBrowser({ stepDelayMs: 60, images: await frameImages() });
+    const render = createVideoRenderer(browser, {
+      checkOptions: { lookup: publicLookup }, options: { settleBudgetMs: 100, afterSeconds: 0.6, minSeconds: 1 }, log: silent,
+    });
+    await render({ url: 'http://public.test/' });
+    const { steps } = browser.state;
+    // Its first slice, two animation frames, costs 60 ms: the whole settle at that rate would take 2.8 s.
+    assert.deepEqual(steps.slice(0, 3), [['runFor', 32], ['fastForward', 1468], ['fastForward', 33]]);
+    assert.ok(steps.slice(1).every(([kind]) => kind === 'fastForward'));
+  });
+
+  test('a page too slow even for 2 s at 10 fps answers 200 "too_slow" with its first frame, well before the deadline', async () => {
+    const images = await frameImages();
+    const browser = fakeBrowser({ screenshotDelayMs: 150, stepDelayMs: 150, images });
+    const app = createVideoApp({
+      renderVideo: createVideoRenderer(browser, {
+        checkOptions: { lookup: publicLookup }, options: { deadlineMs: 4000, reserveMs: 1000, settleBudgetMs: 200 }, log: silent,
+      }),
+      key: KEY,
+      log: silent,
+    });
+    const server = http.createServer(app);
+    try {
+      const base = `http://127.0.0.1:${await listen(server)}`;
+      const t0 = Date.now();
+      const r = await fetch(`${base}/render-video`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': KEY }, body: JSON.stringify({ url: 'http://public.test/' }),
+      });
+      const took = Date.now() - t0;
+      const json = await r.json();
+      assert.equal(r.status, 200);
+      assert.equal(json.success, true);
+      assert.equal(json.video, null);
+      assert.equal(json.reason, 'too_slow');
+      assert.ok(Buffer.from(json.frame, 'base64').equals(images[0]), 'the first frame is the answer');
+      assert.ok(took < 2500, `answered after ${took} ms`);
+    } finally {
+      server.close();
+    }
+  });
+
+  test('at every frame rate and length the budget can choose, the clip ends on frame 0 exactly', async () => {
+    // Frame 0 white, every other frame black: the last frame of the clip must be white again.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'video-fade-'));
+    try {
+      const color = (c) => execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', `color=c=${c}:s=64x36`,
+        '-frames:v', '1', '-f', 'image2', '-c:v', 'mjpeg', '-']);
+      const white = color('white');
+      const black = color('black');
+      for (const [fps, frames] of [[30, 120], [30, 61], [15, 60], [15, 59], [15, 32], [15, 31], [10, 40], [10, 23]]) {
+        for (const name of fs.readdirSync(dir)) fs.rmSync(path.join(dir, name));
+        for (let i = 0; i < frames; i += 1) fs.writeFileSync(path.join(dir, `f${String(i).padStart(4, '0')}.jpg`), i === 0 ? white : black);
+        const clip = path.join(dir, 'out.mp4');
+        fs.writeFileSync(clip, await encodeLoop('ffmpeg', dir, frames, fps, VIDEO_DEFAULTS));
+        const luma = spawnSync('ffmpeg', ['-hide_banner', '-i', clip, '-vf', 'signalstats,metadata=mode=print:key=lavfi.signalstats.YAVG:file=-',
+          '-f', 'null', '-'], { encoding: 'utf8' });
+        const yavg = [...luma.stdout.matchAll(/YAVG=([0-9.]+)/g)].map((m) => Number(m[1]));
+        assert.equal(yavg.length, frames, `${fps} fps ${frames} frames`);
+        assert.ok(yavg[0] > 200 && yavg[frames - 2] < yavg[frames - 1], `${fps} fps ${frames} frames: ${yavg.slice(-4)}`);
+        assert.ok(Math.abs(yavg[frames - 1] - yavg[0]) < 2, `${fps} fps ${frames} frames: first ${yavg[0]} last ${yavg[frames - 1]}`);
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('the time budget (fitCapture)', () => {
+    const limits = { strides: [1, 2, 3], minTicks: 60 };
+    const fit = (now) => fitCapture({ stride: 1, end: 120, ...now }, limits);
+
+    test('the plan stays while what is left fits, or before a frame is timed', () => {
+      assert.deepEqual(fit({ next: 3, frameMs: 100, msLeft: 20_000 }), { stride: 1, end: 120 });
+      assert.deepEqual(fit({ next: 3, frameMs: null, msLeft: 1 }), { stride: 1, end: 120 });
+    });
+
+    test('a slow page drops to 15, then to 10 frames a second, keeping the whole clip', () => {
+      // From tick 3: 117 frames left at 30 fps, 58 at 15 (ticks 4-118), 39 at 10 (ticks 3-117).
+      assert.deepEqual(fit({ next: 3, frameMs: 500, msLeft: 29_000 }), { stride: 2, end: 120 });
+      assert.deepEqual(fit({ next: 3, frameMs: 500, msLeft: 28_000 }), { stride: 3, end: 120 });
+      assert.deepEqual(fit({ next: 3, frameMs: 500, msLeft: 19_500 }), { stride: 3, end: 120 });
+    });
+
+    test('when no frame rate films the whole clip, it is cut, at 10 fps: the longest clip that fits', () => {
+      assert.deepEqual(fit({ next: 3, frameMs: 500, msLeft: 15_000 }), { stride: 3, end: 93 });
+      assert.deepEqual(fit({ next: 3, frameMs: 1000, msLeft: 19_000 }), { stride: 3, end: 60 });
+      assert.deepEqual(fit({ next: 101, frameMs: 1000, msLeft: 5500 }), { stride: 3, end: 117 });
+    });
+
+    test('when no more frame fits, the clip ends at the frames filmed, at the frame rate they were filmed', () => {
+      assert.deepEqual(fit({ next: 70, frameMs: 500, msLeft: -100 }), { stride: 1, end: 70 });
+      assert.deepEqual(fitCapture({ next: 81, stride: 3, end: 120, frameMs: 500, msLeft: 300 }, limits), { stride: 3, end: 81 });
+    });
+
+    test('too slow for 2 s even at 10 fps: no clip', () => {
+      assert.equal(fit({ next: 3, frameMs: 1000, msLeft: 18_999 }), null);
+      assert.equal(fit({ next: 30, frameMs: 1000, msLeft: -1 }), null);
+    });
+
+    test('a clip at 15 fps never drops to 10 (its frames miss that grid): it is cut at 15', () => {
+      assert.deepEqual(fitCapture({ next: 20, stride: 2, end: 120, frameMs: 1000, msLeft: 30_000 }, limits), { stride: 2, end: 80 });
+      assert.equal(fitCapture({ next: 20, stride: 2, end: 120, frameMs: 1000, msLeft: 10_000 }, limits), null);
+    });
   });
 
   test('only a known control kind and a point inside the viewport leave the page', () => {
