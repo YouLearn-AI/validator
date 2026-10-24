@@ -264,10 +264,13 @@ export function fitCapture({ next, stride, end, frameMs, msLeft }, { strides, mi
 
 const mean = (values) => values.reduce((a, b) => a + b, 0) / values.length;
 
-function run(command, args, { signal } = {}) {
+// With `onStdout`, stdout goes to it chunk by chunk (and the promise resolves to ''); if it throws, the command is
+// stopped and the promise rejects with that error.
+function run(command, args, { signal, onStdout } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
+    let failure = null;
     let killTimer;
     const stop = () => {
       child.kill('SIGTERM');
@@ -275,37 +278,135 @@ function run(command, args, { signal } = {}) {
     };
     if (signal?.aborted) stop();
     else signal?.addEventListener('abort', stop, { once: true });
-    child.stdout.on('data', (d) => { stdout += d; });
+    child.stdout.on('data', (d) => {
+      if (!onStdout) {
+        stdout += d;
+        return;
+      }
+      if (failure) return;
+      try {
+        onStdout(d);
+      } catch (error) {
+        failure = error;
+        stop();
+      }
+    });
     child.stderr.on('data', () => {}); // ffmpeg's messages can name page-derived files; never kept
     child.on('error', () => {}); // a failed spawn is followed by 'close'
     child.on('close', (code, sig) => {
       clearTimeout(killTimer);
       signal?.removeEventListener('abort', stop);
-      if (code === 0) resolve(stdout);
+      if (failure) reject(failure);
+      else if (code === 0) resolve(stdout);
       else reject(new FfmpegFailed(code ?? sig));
     });
   });
 }
 
 /**
- * The motion of the frames in `dir`, frame by frame from the second: `ydif`, the mean absolute luma change from
- * the frame before (0-255), and `blocks`, how many blocks of a cols x rows grid have more than `blockShare` of their
- * pixels changed in luma by more than `luma`.
+ * Counts, for each frame after the first, the blocks of a cols x rows grid in which more than `blockShare` of the
+ * pixels changed in luma by more than `luma` from the frame before. Fed the frames' luma planes (width x height
+ * bytes each, back to back) in chunks of any size; `done()` gives the counts. Plain arithmetic, so it gives the
+ * same answer on every machine: ffmpeg's area scaling did not (5.1 on x86-64 left 96 of 128 blocks of an all-zero
+ * frame at 5, so a static page counted as moving, ops I-609).
  */
-async function motionOf(ffmpeg, dir, fps, { luma, blockShare, grid }, signal) {
-  const input = ['-hide_banner', '-loglevel', 'error', '-framerate', String(fps), '-i', path.join(dir, 'f%04d.jpg')];
-  const values = (out, key) => [...out.matchAll(new RegExp(`lavfi\\.signalstats\\.${key}=([0-9.]+)`, 'g'))].map((m) => Number(m[1]));
-  const ydif = values(await run(ffmpeg, [...input,
-    '-vf', 'signalstats,metadata=mode=print:key=lavfi.signalstats.YDIF:file=-', '-f', 'null', '-'], { signal }), 'YDIF');
-  // The difference of each frame from the one before, white where it is over `luma`, averaged over each block
-  // (area scaling to the grid), then white where a block's share is over `blockShare`: the mean, times the number of
-  // blocks, is the count.
+export function blockCounter({ width, height, grid, luma, blockShare }) {
+  const size = width * height;
   const cells = grid.cols * grid.rows;
-  const blocks = values(await run(ffmpeg, [...input,
-    '-vf', `format=gray,tblend=all_mode=difference,lut=y='if(gt(val,${luma}),255,0)',scale=${grid.cols}:${grid.rows}:flags=area,`
-      + `lut=y='if(gt(val,${255 * blockShare}),255,0)',signalstats,metadata=mode=print:key=lavfi.signalstats.YAVG:file=-`,
-    '-f', 'null', '-'], { signal }), 'YAVG').map((v) => Math.round((v / 255) * cells));
-  // signalstats gives the first frame a YDIF of 0; tblend starts at the second frame.
+  const colOf = Uint16Array.from({ length: width }, (_, x) => Math.floor((x * grid.cols) / width));
+  const rowOf = Uint16Array.from({ length: height }, (_, y) => Math.floor((y * grid.rows) / height) * grid.cols);
+  const pixels = new Uint32Array(cells); // pixels in each block
+  for (let y = 0; y < height; y += 1) for (let x = 0; x < width; x += 1) pixels[rowOf[y] + colOf[x]] += 1;
+  let previous = null;
+  let current = new Uint8Array(size);
+  let filled = 0;
+  const counts = [];
+  const changed = new Uint32Array(cells);
+  const compare = () => {
+    if (previous) {
+      changed.fill(0);
+      for (let y = 0, i = 0; y < height; y += 1) {
+        const row = rowOf[y];
+        for (let x = 0; x < width; x += 1, i += 1) {
+          const d = current[i] - previous[i];
+          if (d > luma || d < -luma) changed[row + colOf[x]] += 1;
+        }
+      }
+      let n = 0;
+      for (let b = 0; b < cells; b += 1) if (changed[b] > blockShare * pixels[b]) n += 1;
+      counts.push(n);
+    }
+    const spare = previous ?? new Uint8Array(size);
+    previous = current;
+    current = spare;
+    filled = 0;
+  };
+  return {
+    push(chunk) {
+      for (let offset = 0; offset < chunk.length;) {
+        const take = Math.min(size - filled, chunk.length - offset);
+        current.set(chunk.subarray(offset, offset + take), filled);
+        filled += take;
+        offset += take;
+        if (filled === size) compare();
+      }
+    },
+    done() {
+      if (filled !== 0) throw new Error('The luma planes ended inside a frame');
+      return counts;
+    },
+  };
+}
+
+// The first JPEG_HEAD_BYTES of a file, where a JPEG's frame header is (Chromium's: within the first kilobyte).
+const JPEG_HEAD_BYTES = 65_536;
+async function readHead(file) {
+  const handle = await fs.open(file, 'r');
+  try {
+    const { buffer, bytesRead } = await handle.read(Buffer.alloc(JPEG_HEAD_BYTES), 0, JPEG_HEAD_BYTES, 0);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+// The width and height in a JPEG's frame header (SOF0-SOF15, not DHT, JPG or DAC).
+function jpegSize(buffer) {
+  for (let i = 2; i + 9 <= buffer.length && buffer[i] === 0xff;) {
+    const marker = buffer[i + 1];
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      return { height: buffer.readUInt16BE(i + 5), width: buffer.readUInt16BE(i + 7) };
+    }
+    i += 2 + buffer.readUInt16BE(i + 2);
+  }
+  throw new Error('A frame has no JPEG frame header');
+}
+
+/**
+ * The motion of the frames in `dir` (exported for its tests), frame by frame from the second: `ydif`, the mean
+ * absolute luma change from the frame before (0-255), and `blocks` (blockCounter). For the blocks ffmpeg only
+ * decodes each frame and copies out its luma plane (extractplanes, no scaling or conversion). Every frame must have
+ * the first one's size: ffmpeg would scale a frame of another size to it, and the planes would no longer compare.
+ */
+export async function motionOf(ffmpeg, dir, fps, { luma, blockShare, grid }, signal) {
+  const names = (await fs.readdir(dir)).filter((n) => /^f\d{4}\.jpg$/.test(n)).sort();
+  let width = 0;
+  let height = 0;
+  for (const name of names) {
+    const size = jpegSize(await readHead(path.join(dir, name)));
+    if (!width) ({ width, height } = size);
+    else if (size.width !== width || size.height !== height) throw new Error('The frames differ in size');
+  }
+  if (!width || !height) throw new Error('No frames to measure');
+  const input = ['-hide_banner', '-loglevel', 'error', '-framerate', String(fps), '-i', path.join(dir, 'f%04d.jpg')];
+  const ydif = [...(await run(ffmpeg, [...input,
+    '-vf', 'signalstats,metadata=mode=print:key=lavfi.signalstats.YDIF:file=-', '-f', 'null', '-'], { signal }))
+    .matchAll(/lavfi\.signalstats\.YDIF=([0-9.]+)/g)].map((m) => Number(m[1]));
+  const counter = blockCounter({ width, height, grid, luma, blockShare });
+  await run(ffmpeg, [...input, '-vf', 'extractplanes=y', '-f', 'rawvideo', '-'], { signal, onStdout: (d) => counter.push(d) });
+  const blocks = counter.done();
+  // signalstats gives the first frame a YDIF of 0; the blocks start at the second frame.
+  if (blocks.length !== ydif.length - 1) throw new Error('The two motion passes saw different frames');
   return { ydif: ydif.slice(1), blocks };
 }
 

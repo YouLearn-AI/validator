@@ -16,12 +16,14 @@ import { chromium } from 'playwright';
 import { GuardedBrowser } from '../guarded-browser.mjs';
 import { createVideoApp } from '../video-app.mjs';
 import {
-  createVideoRenderer, encodeLoop, fitCapture, RenderBusy, RenderTimeout, sanitizeShare, sanitizeTarget, VIDEO_DEFAULTS,
+  blockCounter, createVideoRenderer, encodeLoop, fitCapture, motionOf, RenderBusy, RenderTimeout, sanitizeShare, sanitizeTarget,
+  VIDEO_DEFAULTS,
 } from '../video-renderer.mjs';
 
 const FAKE_PUBLIC = '93.184.216.34';
 const KEY = 'test-video-key-0123456789';
 const FFPROBE = process.env.FFPROBE_PATH || 'ffprobe';
+const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 
 const PAGES = {
   // Moves only after its Start button: a square driven by requestAnimationFrame.
@@ -899,6 +901,80 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  describe('the motion blocks', () => {
+    const W = 1200;
+    const H = 630;
+    const o = VIDEO_DEFAULTS;
+    const counter = () => blockCounter({ width: W, height: H, grid: o.motionGrid, luma: o.motionPixelLuma, blockShare: o.motionBlockShare });
+    const plane = (fill = 200) => new Uint8Array(W * H).fill(fill);
+    // A copy of `base` with a w x h rectangle at (x, y) changed by `by`.
+    const withBox = (base, x, y, w, h, by = 60) => {
+      const p = base.slice();
+      for (let r = y; r < y + h; r += 1) for (let c = x; c < x + w; c += 1) p[r * W + c] -= by;
+      return p;
+    };
+
+    test('identical frames have no changed block; a change under the luma step or in one block area counts as such', () => {
+      const c = counter();
+      const base = plane();
+      for (const p of [base, base, withBox(base, 0, 0, W, H, 12), withBox(base, 10, 10, 60, 60), withBox(base, 40, 40, 70, 70)]) c.push(p);
+      // base -> base: 0; -> all changed by 12 (not over 12): 0; -> a 60 px box inside block 0: 1; -> a 70 px box over
+      // the corner of four blocks: 4 (and block 0 changed back: still among them).
+      assert.deepEqual(c.done(), [0, 0, 1, 4]);
+    });
+
+    test('the frames can arrive in chunks of any size', () => {
+      const frames = [plane(), withBox(plane(), 300, 100, 400, 300), plane()];
+      const whole = counter();
+      for (const f of frames) whole.push(f);
+      const bytes = Buffer.concat(frames.map((f) => Buffer.from(f)));
+      const chunked = counter();
+      for (let i = 0; i < bytes.length; i += 65_521) chunked.push(bytes.subarray(i, i + 65_521));
+      assert.deepEqual(chunked.done(), whole.done());
+      assert.ok(whole.done()[0] >= o.motionMinBlocks, JSON.stringify(whole.done()));
+    });
+
+    test('luma planes that end inside a frame are refused', () => {
+      const c = counter();
+      c.push(new Uint8Array(W * H + 10));
+      assert.throws(() => c.done(), /inside a frame/);
+    });
+
+    // The real ffmpeg binary end to end: ffmpeg 5.1 on x86-64 scaled an all-zero frame to non-zero blocks, so a
+    // static page counted as moving (ops I-609); the luma planes go through no scaling now.
+    test('with the real ffmpeg, two identical frames give 0 blocks and two different ones give more than 5', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'motion-test-'));
+      try {
+        const frames = (n, start) => execFileSync(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', `testsrc2=s=${W}x${H}:r=30`,
+          '-frames:v', String(n), '-pix_fmt', 'yuvj420p', '-q:v', '2', '-start_number', String(start), path.join(dir, 'f%04d.jpg')]);
+        const opts = { luma: o.motionPixelLuma, blockShare: o.motionBlockShare, grid: o.motionGrid };
+        frames(1, 0);
+        fs.copyFileSync(path.join(dir, 'f0000.jpg'), path.join(dir, 'f0001.jpg'));
+        assert.deepEqual(await motionOf(FFMPEG, dir, 30, opts), { ydif: [0], blocks: [0] });
+        frames(2, 0); // two consecutive frames of a moving test pattern
+        const moving = await motionOf(FFMPEG, dir, 30, opts);
+        assert.equal(moving.blocks.length, 1);
+        assert.ok(moving.blocks[0] > o.motionMinBlocks, JSON.stringify(moving));
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('frames of different sizes are refused, even of the same area', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'motion-test-'));
+      try {
+        const frame = (size, n) => execFileSync(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', `color=c=white:s=${size}`,
+          '-frames:v', '1', '-pix_fmt', 'yuvj420p', '-start_number', String(n), path.join(dir, 'f%04d.jpg')]);
+        frame(`${W}x${H}`, 0);
+        frame(`${W / 2}x${H * 2}`, 1);
+        const opts = { luma: o.motionPixelLuma, blockShare: o.motionBlockShare, grid: o.motionGrid };
+        await assert.rejects(motionOf(FFMPEG, dir, 30, opts), /differ in size/);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('the time budget (fitCapture)', () => {
