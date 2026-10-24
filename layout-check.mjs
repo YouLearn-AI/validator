@@ -438,7 +438,12 @@ function clampNumber(value) {
 export function sanitizeSample(raw) {
   const sample = raw && typeof raw === 'object' ? raw : {};
   const findings = [];
-  for (const f of Array.isArray(sample.findings) ? sample.findings.slice(0, MAX_SAMPLE_FINDINGS) : []) {
+  const listed = Array.isArray(sample.findings) ? sample.findings : [];
+  // The page-too-wide finding comes last from measure(): it goes first, so the cap never drops it.
+  const wideFirst = [
+    ...listed.filter((f) => f?.type === 'wide').slice(0, 1), ...listed.filter((f) => f?.type !== 'wide'),
+  ];
+  for (const f of wideFirst.slice(0, MAX_SAMPLE_FINDINGS)) {
     if (!f || typeof f !== 'object' || !TYPE_RANK.has(f.type) || !Array.isArray(f.box) || f.box.length !== 4) continue;
     const box = f.box.map(clampNumber);
     if (box.some((v) => v === null)) continue;

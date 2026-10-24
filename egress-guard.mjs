@@ -147,16 +147,16 @@ export async function publicAddresses(host, { lookup = defaultLookup, log = cons
  * refused before anything opens them.
  * @returns {URL}
  */
-export function checkRequestUrl(url, { log = console } = {}) {
+export function checkRequestUrl(url, { log = console, logHosts = true } = {}) {
   let parsed;
   try {
     parsed = new URL(String(url).trim());
   } catch {
     throw refuse('malformed', '', log);
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw refuse('scheme', parsed.hostname, log);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw refuse('scheme', parsed.hostname, log, logHosts);
   if (!parsed.hostname) throw refuse('malformed', '', log);
-  if (parsed.username || parsed.password) throw refuse('credentials', parsed.hostname, log);
+  if (parsed.username || parsed.password) throw refuse('credentials', parsed.hostname, log, logHosts);
   return parsed;
 }
 

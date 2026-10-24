@@ -118,7 +118,8 @@ describe('layout check: parsing and selection (no browser)', () => {
     assert.equal(s.viewportHeight, 0);
     assert.equal(s.pageWidth, 100_000);
     assert.equal(s.findings.length, 2);
-    const [a, b] = s.findings;
+    const a = s.findings.find((f) => f.type === 'overlap');
+    const b = s.findings.find((f) => f.type === 'wide');
     assert.equal(a.kind, 'unknown');
     assert.equal(a.text.length, 120);
     assert.ok(!a.text.includes('\u0000'));
@@ -126,6 +127,10 @@ describe('layout check: parsing and selection (no browser)', () => {
     assert.deepEqual(b.box, [100_000, -100_000, 4, 4]);
     assert.equal(b.text, '');
     assert.deepEqual(sanitizeSample(null).findings, []);
+    // The page-too-wide finding survives the cap even when it comes last.
+    const flooded = Array.from({ length: 300 }, () => ({ type: 'cut', kind: 'html', text: 't', box: [0, 0, 1, 1] }));
+    flooded.push({ type: 'wide', kind: 'page', text: 'page is 40 px wider than the screen', box: [390, 0, 430, 800] });
+    assert.equal(sanitizeSample({ findings: flooded }).findings.filter((f) => f.type === 'wide').length, 1);
     assert.equal(sanitizeSample({ findings: Array.from({ length: 500 }, () => ({ type: 'cut', kind: 'html', text: 't', box: [0, 0, 1, 1] })) }).findings.length, 200);
   });
 
@@ -471,7 +476,9 @@ describe('layout check (Chromium)', { timeout: 300_000 }, () => {
 // text problems on 02, 04, 05, 06 and 08 and none on 01, 03 and 07, and round 3's checker agreed on all 8. These
 // pages load Google Fonts (and 07 three.js from unpkg), so this suite needs the network; it is skipped without it.
 describe('layout check on the round-3 lessons (service defaults)', { timeout: 300_000 }, async () => {
-  const online = await dns.lookup('fonts.googleapis.com').then(() => true, () => false);
+  // The fixtures' own resources, fetched for real (DNS alone can answer where the web is blocked).
+  const online = await fetch('https://fonts.googleapis.com/css2?family=Inter', { signal: AbortSignal.timeout(5000) })
+    .then((r) => r.ok, () => false);
   let browser;
   const silent = { info() {}, warn() {}, error() {}, log() {} };
   before(() => { browser = new GuardedBrowser({ log: silent, killable: true }); });
