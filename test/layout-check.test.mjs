@@ -467,6 +467,14 @@ describe('layout check (Chromium)', { timeout: 300_000 }, () => {
     assert.equal(r.widths['390'].control, 'button');
   });
 
+  test('a slow control near the deadline still answers: the watch after it is cut to the deadline', async () => {
+    const r = await checker({ stepTimeoutMs: 1000, controlWatchMs: 10_000, deadlineMs: 7000 })({ html: PAGES.slowOnClick, widths: [390] });
+    assert.equal(r.status, 'ok');
+    assert.deepEqual(r.errors, []);
+    assert.equal(r.widths['390'].control, 'button');
+    assert.ok(r.timings.total_ms < 7000, `${r.timings.total_ms} ms`);
+  });
+
   test('a hang is confirmed within the deadline, however long the confirmation may be', async () => {
     const t0 = Date.now();
     const r = await checker({ stepTimeoutMs: 1000, hangConfirmMs: 60_000, deadlineMs: 7000 })({ html: PAGES.hang });

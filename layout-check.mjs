@@ -38,7 +38,8 @@ export const CHECK_DEFAULTS = Object.freeze({
   minSeen: 2,
   // A frame that has not fired its load event by then makes the answer "inconclusive" (the page ships as written).
   loadTimeoutMs: 8000,
-  // After the control is used, how long script errors are still counted (the clip renderer films 3.6 s after its use).
+  // After the control is used, how long script errors are still counted (the clip renderer films 3.6 s after its use);
+  // less when the deadline less answerReserveMs comes first.
   controlWatchMs: 2000,
   // A slider is moved this many steps with the arrow key after it is clicked.
   rangeSteps: 3,
@@ -720,7 +721,8 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
         })());
         if (used === HUNG) return result({ shot, control });
       }
-      await waitUntil(Date.now() + o.controlWatchMs, signal);
+      // Cut to the deadline less the reserve: a page whose steps were slow still answers, instead of "timed_out".
+      await waitUntil(Math.min(Date.now() + o.controlWatchMs, deadlineAt - o.answerReserveMs), signal);
       return result({ shot, control });
     } finally {
       // A width that ends early (an error, the deadline) still reports, so the other width never waits on it.
