@@ -58,3 +58,38 @@ export function createCheckApp({ checkLayout, key = process.env.RENDER_API_KEY |
 
   return app;
 }
+
+/**
+ * Starts Chromium, then opens the port. Cloud Run counts an instance as started once its startup probe (TCP on
+ * this port) passes, and with request-based billing an instance has CPU only while it starts or serves a request
+ * (docs.cloud.google.com/run/docs/container-contract, "Instance lifecycle"). A launch begun after the port opened
+ * ran with no CPU once the backend's GET /health pre-warm was answered, and never got ready (I-610, 22:19Z and
+ * 23:09Z on 2026-10-24). Launched first, Chromium is up before the first request, the pre-warm included.
+ * A launch that fails still opens the port (the first check launches again); one that never gets ready does not,
+ * since the GuardedBrowser's onStuckLaunch ends the process.
+ * @param {import('express').Express} app
+ * @param {import('./guarded-browser.mjs').GuardedBrowser} browser
+ * @returns {Promise<import('node:http').Server|null>} the listening server, or null when the launch got stuck
+ */
+export async function listenWhenReady(app, browser, { port, host, log = console } = {}) {
+  const t0 = Date.now();
+  try {
+    await browser.browser();
+    log.log(`[CHECK_LAYOUT] browser ready ms=${Date.now() - t0}`);
+  } catch (error) {
+    log.error(`[CHECK_LAYOUT] browser start failed code=${errorCode(error)}`);
+    if (browser.stuck) return null;
+  }
+  return new Promise((resolve, reject) => {
+    const where = host === undefined ? [port] : [port, host];
+    // Express 5 passes a listen error (a port in use) to this callback.
+    const server = app.listen(...where, (error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      log.log(`Layout checker listening on port ${server.address().port}`);
+      resolve(server);
+    });
+  });
+}

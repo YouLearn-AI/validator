@@ -50,9 +50,15 @@ export const CHECK_DEFAULTS = Object.freeze({
   // Distinct page errors kept per width and phase (load, control): an error that varies every frame can't crowd out
   // the control's, and one width can't crowd out the other.
   maxErrorsPerPhase: 5,
-  // One step that runs page code (a measurement, the control's click, the screenshot): past it the page counts as
-  // hung (a script error "Hang" in that phase), and the width ends with what it has.
+  // One step that runs page code (a measurement, the control's click, the screenshot): past it the page is asked
+  // again with a trivial evaluate, for up to hangConfirmMs more. A page that answers is slow, not stopped: the step's
+  // own answer is used when it has come, and the check goes on. A page that does not answer counts as hung (a script
+  // error "Hang" in that phase), and the width ends with what it has. A WebGL page whose main thread was busy for
+  // over 3 s on a cold Cloud Run instance was called hung with no confirmation (I-610, 2026-10-24).
   stepTimeoutMs: 3000,
+  // Cut to what the deadline leaves less answerReserveMs, so a check with a hang still answers before its deadline.
+  hangConfirmMs: 5000,
+  answerReserveMs: 1000,
   shotQuality: 70,
 });
 
@@ -90,8 +96,10 @@ class CheckTimeout extends Error {
 
 class StepTimeout extends Error {}
 
-// What a page step answers when the page did not answer in time.
+// What a page step answers when the page did not answer in time (HUNG), or answered the trivial evaluate but not
+// the step itself in time (SKIPPED: alive, nothing to use from that step).
 const HUNG = Symbol('hung');
+const SKIPPED = Symbol('skipped');
 const HANG_MESSAGES = {
   load: 'The page stopped responding while it was measured (a script that never returns)',
   control: 'The page stopped responding after its first control was used (a handler that never returns)',
@@ -532,7 +540,7 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
   let busy = false;
 
   // One width: open, load, sample, report to the gate, screenshot with the boxes, use the first control, watch.
-  async function checkWidth(width, html, { signal, contexts, gate, progress }) {
+  async function checkWidth(width, html, { signal, contexts, gate, progress, deadlineAt }) {
     let arrived = false;
     const stage = (name) => { progress.byWidth[width] = name; };
     try {
@@ -558,18 +566,38 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
         perPhase[record.phase] += 1;
       };
       page.on('pageerror', (error) => keep(errorRecord(error, phase)));
-      // A step that runs page code, or HUNG when the page does not answer in time (an endless loop holds its
-      // renderer): then a "Hang" error is recorded for the phase.
-      const step = (promise) => within(promise, o.stepTimeoutMs).catch((error) => {
-        if (error instanceof StepTimeout) {
-          keep(errorRecord({ name: 'Hang', message: HANG_MESSAGES[phase] }, phase));
-          return HUNG;
-        }
-        throw error;
-      });
       await page.setContent(HOST, { waitUntil: 'load' });
       const frameElement = await page.$('#f');
       const frame = await frameElement.contentFrame();
+      // A step that runs page code. Past stepTimeoutMs, the page frame is asked a trivial evaluate: the frame's main
+      // thread runs one task at a time, so it answers once a long task ends (a slow page) and never in an endless
+      // loop. Answered: the step's own answer when it has come by then, else SKIPPED. Not answered within
+      // hangConfirmMs (cut to the deadline): HUNG, and a "Hang" error is recorded for the phase.
+      const step = async (promise) => {
+        const t0 = Date.now();
+        try {
+          return await within(promise, o.stepTimeoutMs);
+        } catch (error) {
+          if (!(error instanceof StepTimeout)) throw error;
+        }
+        const confirmMs = Math.max(0, Math.min(o.hangConfirmMs, deadlineAt - o.answerReserveMs - Date.now()));
+        // A rejected evaluate (a frame that navigated or went away) answered too: it is not a loop.
+        const answered = await within(frame.evaluate(() => true).catch(() => true), confirmMs)
+          .then(() => true, () => false);
+        let value = HUNG;
+        if (answered) {
+          value = await within(promise, Math.max(0, t0 + o.stepTimeoutMs + confirmMs - Date.now())).catch((error) => {
+            if (error instanceof StepTimeout) return SKIPPED;
+            throw error;
+          });
+        } else {
+          keep(errorRecord({ name: 'Hang', message: HANG_MESSAGES[phase] }, phase));
+        }
+        // Times and codes only.
+        log.info(`[CHECK_LAYOUT] slow step width=${width} stage=${progress.byWidth[width]} ms=${Date.now() - t0} `
+          + `answered=${answered} used=${value !== HUNG && value !== SKIPPED}`);
+        return value;
+      };
 
       stage('load');
       const tMount = Date.now();
@@ -606,6 +634,8 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
           hung = true;
           break;
         }
+        // Alive but this sample's measurement did not come back: the sample does not count.
+        if (raw === SKIPPED) continue;
         last = sanitizeSample(raw);
         if (last.viewportWidth > 0 && last.pageWidth > last.viewportWidth + 1) wide = true;
         for (const f of last.findings) {
@@ -644,7 +674,7 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
           return jpeg;
         })());
         if (taken === HUNG) return result({});
-        shot = taken.toString('base64');
+        if (taken !== SKIPPED) shot = taken.toString('base64');
       }
 
       stage('control');
@@ -653,7 +683,8 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
         frame.evaluate(pickControl, { preferSource: PREFER.source, avoidSource: AVOID.source }).catch(() => null),
       );
       if (picked === HUNG) return result({ shot });
-      const target = sanitizeTarget(picked, last.viewportWidth || width, last.viewportHeight || 1);
+      const target = picked === SKIPPED ? null
+        : sanitizeTarget(picked, last.viewportWidth || width, last.viewportHeight || 1);
       let control = 'none';
       if (target && frameBox) {
         control = target.kind;
@@ -693,6 +724,7 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
       signal.addEventListener('abort', () => reject(new CheckTimeout()), { once: true });
     });
     stopped.catch(() => {});
+    const deadlineAt = t0 + o.deadlineMs;
     const timer = setTimeout(() => controller.abort(), o.deadlineMs);
     let launchMs = 0;
     let tasks = [];
@@ -702,7 +734,7 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
         await Promise.race([guardedBrowser.browser(), stopped]);
         launchMs = Date.now() - t0;
         const gate = createGate(widths, o.maxFindings);
-        tasks = widths.map((w) => checkWidth(w, html, { signal, contexts, gate, progress }));
+        tasks = widths.map((w) => checkWidth(w, html, { signal, contexts, gate, progress, deadlineAt }));
         results = await Promise.race([Promise.all(tasks), stopped]);
         const { ordered } = await gate.selection;
         const status = results.every((r) => r.loaded) ? 'ok' : 'inconclusive';
