@@ -675,12 +675,15 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
       assert.deepEqual(fit({ next: 3, frameMs: 500, msLeft: 19_500 }), { stride: 3, end: 120 });
     });
 
-    test('when no frame rate films the whole clip, it is cut, at the fastest rate that still gives 2 s', () => {
-      assert.deepEqual(fit({ next: 3, frameMs: 500, msLeft: 15_000 }), { stride: 2, end: 64 });
+    test('when no frame rate films the whole clip, it is cut, at 10 fps: the longest clip that fits', () => {
+      assert.deepEqual(fit({ next: 3, frameMs: 500, msLeft: 15_000 }), { stride: 3, end: 93 });
       assert.deepEqual(fit({ next: 3, frameMs: 1000, msLeft: 19_000 }), { stride: 3, end: 60 });
-      // Late in the clip, the frames filmed at 30 fps are kept rather than dropped for 10.
-      assert.deepEqual(fit({ next: 101, frameMs: 1000, msLeft: 5500 }), { stride: 1, end: 106 });
+      assert.deepEqual(fit({ next: 101, frameMs: 1000, msLeft: 5500 }), { stride: 3, end: 117 });
+    });
+
+    test('when no more frame fits, the clip ends at the frames filmed, at the frame rate they were filmed', () => {
       assert.deepEqual(fit({ next: 70, frameMs: 500, msLeft: -100 }), { stride: 1, end: 70 });
+      assert.deepEqual(fitCapture({ next: 81, stride: 3, end: 120, frameMs: 500, msLeft: 300 }, limits), { stride: 3, end: 81 });
     });
 
     test('too slow for 2 s even at 10 fps: no clip', () => {

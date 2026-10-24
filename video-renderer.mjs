@@ -174,9 +174,10 @@ export function sanitizeTarget(raw, width, height) {
  * What is left to film, so that the filming ends in the time it has (ops I-609). Frames sit on a grid of ticks of
  * 1/fps s; a clip at `stride` is every stride-th tick of [0, end). `next` is the first tick not filmed yet,
  * `frameMs` the cost of one more frame (its screenshot and its step of the clock), `msLeft` the time left to film.
- * The whole clip at the fastest frame rate that can film it in time; else the clip cut to the frames that fit, at
- * the fastest frame rate that still gives `minTicks`; else null (too slow). Only a stride that is a multiple of
- * the current one can be taken: the frames filmed so far must hold every tick of the slower grid.
+ * The whole clip at the fastest frame rate that can film it in time. Else a shorter clip: the frames filmed so far
+ * when no more fit, else as many as fit at the slowest frame rate (the longest clip, and the most room if frames
+ * get slower). Null when that is under `minTicks`. Only a stride that is a multiple of the current one can be
+ * taken: the frames filmed so far must hold every tick of the slower grid.
  * @param {{ next: number, stride: number, end: number, frameMs: number|null, msLeft: number }} now
  * @param {{ strides: number[], minTicks: number }} limits
  * @returns {{ stride: number, end: number } | null}
@@ -184,16 +185,13 @@ export function sanitizeTarget(raw, width, height) {
 export function fitCapture({ next, stride, end, frameMs, msLeft }, { strides, minTicks }) {
   const options = strides.filter((s) => s >= stride && s % stride === 0).sort((x, y) => x - y);
   const first = (s) => Math.ceil(next / s) * s; // the first tick still to film on the grid of stride s
+  const whole = (s) => Math.floor(end / s) * s; // the end of the whole clip on that grid
   const fit = frameMs > 0 ? Math.max(0, Math.floor(msLeft / frameMs)) : Infinity; // frames that fit
-  for (const s of options) {
-    const last = Math.floor(end / s) * s;
-    if (first(s) + fit * s >= last) return { stride: s, end: last };
-  }
-  for (const s of options) {
-    const last = Math.min(Math.floor(end / s) * s, first(s) + fit * s);
-    if (last >= minTicks) return { stride: s, end: last };
-  }
-  return null;
+  const fastest = options.find((s) => first(s) + fit * s >= whole(s));
+  if (fastest) return { stride: fastest, end: whole(fastest) };
+  const cut = fit === 0 ? stride : options[options.length - 1];
+  const last = Math.min(whole(cut), first(cut) + fit * cut);
+  return last >= minTicks ? { stride: cut, end: last } : null;
 }
 
 const mean = (values) => values.reduce((a, b) => a + b, 0) / values.length;
@@ -311,6 +309,9 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
   // Frames are filmed on a grid of ticks of 1/fps s; a slower clip films every stride-th tick.
   const strides = [o.fps, ...o.slowerFps].map((f) => o.fps / f);
   if (!strides.every((s) => Number.isInteger(s) && s >= 1)) throw new Error('Each slower fps must divide fps');
+  // The cost of a frame is the mean of the last few: one draw's work can land in its step or in the next
+  // screenshot (WebGL draws asynchronously), so one frame alone says little.
+  const COST_FRAMES = 10;
   const SLIDER_STEPS = 12;
   const SLIDER_EVERY_TICKS = 3;
   const tickName = (tick) => `t${String(tick).padStart(4, '0')}.jpg`;
@@ -360,7 +361,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     const filmed = [];
     const shotMs = [];
     const stepMs = [];
-    const recent = (values) => values.slice(-o.probeFrames);
+    const recent = (values) => values.slice(-COST_FRAMES);
     let frameMs = null;
     let frame0Jpeg = null;
     let actionKind = 'none';
