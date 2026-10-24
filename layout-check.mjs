@@ -47,7 +47,12 @@ export const CHECK_DEFAULTS = Object.freeze({
   // Closing the contexts after a check, before Chromium is reset when that stalls.
   teardownMs: 5000,
   maxFindings: 20,
-  maxErrors: 10,
+  // Distinct page errors kept per width and phase (load, control): an error that varies every frame can't crowd out
+  // the control's, and one width can't crowd out the other.
+  maxErrorsPerPhase: 5,
+  // One step that runs page code (a measurement, the control's click, the screenshot): past it the page counts as
+  // hung (a script error "Hang" in that phase), and the width ends with what it has.
+  stepTimeoutMs: 3000,
   shotQuality: 70,
 });
 
@@ -84,6 +89,13 @@ class CheckTimeout extends Error {
 }
 
 class StepTimeout extends Error {}
+
+// What a page step answers when the page did not answer in time.
+const HUNG = Symbol('hung');
+const HANG_MESSAGES = {
+  load: 'The page stopped responding while it was measured (a script that never returns)',
+  control: 'The page stopped responding after its first control was used (a handler that never returns)',
+};
 
 // `promise`, or a StepTimeout after `ms`.
 function within(promise, ms) {
@@ -451,14 +463,16 @@ export function sanitizeSample(raw) {
 
 /**
  * An uncaught page error as a record: its name (a plain identifier, else "Error"), the first line of its message
- * (shortened) and a fingerprint of the two. The message goes to the caller only, never into a log.
+ * (shortened) and a fingerprint of the two with every run of digits as "#" (an error that quotes a changing number,
+ * such as a radius or a frame count, is one error). The message goes to the caller only, never into a log.
  */
 export function errorRecord(error, phase) {
   const rawName = typeof error?.name === 'string' ? error.name : '';
   const name = /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(rawName) ? rawName : 'Error';
   const rawMessage = typeof error?.message === 'string' ? error.message : String(error ?? '');
   const firstLine = rawMessage.split('\n', 1)[0];
-  const fp = createHash('sha256').update(`${name}\n${firstLine}`, 'utf8').digest('hex').slice(0, 12);
+  const shape = firstLine.replace(/[0-9]+/g, '#');
+  const fp = createHash('sha256').update(`${name}\n${shape}`, 'utf8').digest('hex').slice(0, 12);
   return { phase, fp, name, message: pageText(firstLine, MESSAGE_MAX) };
 }
 
@@ -515,8 +529,9 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
   // One width: open, load, sample, report to the gate, screenshot with the boxes, use the first control, watch.
   async function checkWidth(width, html, { signal, contexts, gate, progress }) {
     let arrived = false;
+    const stage = (name) => { progress.byWidth[width] = name; };
     try {
-      progress.stage = 'open';
+      stage('open');
       const context = await guardedBrowser.newContext(profileFor(width, o));
       if (signal.aborted) {
         // The deadline passed while it opened: the teardown may have run already, so it is closed here.
@@ -526,19 +541,32 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
       contexts.push(context);
       await context.addInitScript(HOOK);
       const page = await context.newPage();
-      // Distinct by phase and fingerprint as they come, so an error thrown every frame can't crowd out a new one.
+      // Distinct by phase and fingerprint as they come, at most maxErrorsPerPhase a phase, so an error thrown every
+      // frame can't crowd out a new one.
       const errors = new Map();
+      const perPhase = { load: 0, control: 0 };
       let phase = 'load';
-      page.on('pageerror', (error) => {
-        const record = errorRecord(error, phase);
+      const keep = (record) => {
         const key = `${record.phase}|${record.fp}`;
-        if (!errors.has(key) && errors.size < o.maxErrors) errors.set(key, record);
+        if (errors.has(key) || perPhase[record.phase] >= o.maxErrorsPerPhase) return;
+        errors.set(key, record);
+        perPhase[record.phase] += 1;
+      };
+      page.on('pageerror', (error) => keep(errorRecord(error, phase)));
+      // A step that runs page code, or HUNG when the page does not answer in time (an endless loop holds its
+      // renderer): then a "Hang" error is recorded for the phase.
+      const step = (promise) => within(promise, o.stepTimeoutMs).catch((error) => {
+        if (error instanceof StepTimeout) {
+          keep(errorRecord({ name: 'Hang', message: HANG_MESSAGES[phase] }, phase));
+          return HUNG;
+        }
+        throw error;
       });
       await page.setContent(HOST, { waitUntil: 'load' });
       const frameElement = await page.$('#f');
       const frame = await frameElement.contentFrame();
 
-      progress.stage = 'load';
+      stage('load');
       const tMount = Date.now();
       const loaded = await within(page.evaluate(mountPage, html), o.loadTimeoutMs).then(
         () => true,
@@ -559,61 +587,80 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
       const tLoad = Date.now();
       const loadMs = tLoad - tMount;
 
-      progress.stage = 'sample';
+      stage('sample');
       const seen = new Map();
       let last = sanitizeSample(null);
       // Wider than the screen at any sample: also when the cap leaves its finding out, the guard needs it.
       let wide = false;
+      let hung = false;
       for (const [sample, ms] of o.samplesMs.entries()) {
         await waitUntil(tLoad + ms, signal);
         // A page that breaks the measurement (it replaced a built-in it uses) gives an empty sample.
-        last = sanitizeSample(await frame.evaluate(measure).catch(() => null));
+        const raw = await step(frame.evaluate(measure).catch(() => null));
+        if (raw === HUNG) {
+          hung = true;
+          break;
+        }
+        last = sanitizeSample(raw);
         if (last.viewportWidth > 0 && last.pageWidth > last.viewportWidth + 1) wide = true;
         for (const f of last.findings) {
-          const key = `${f.type}|${f.kind}|${f.text}`;
+          // One "wide" finding a width, whatever the overflow measured at each sample.
+          const key = f.type === 'wide' ? 'wide' : `${f.type}|${f.kind}|${f.text}`;
           const entry = seen.get(key) || { ...f, seen: 0, sample: -1 };
           // Once per sample (two labels with the same text count once), with that sample's first box: the latest
           // box, since the screenshot is taken right after the last sample.
           if (entry.sample === sample) continue;
-          seen.set(key, { ...entry, box: f.box, where: f.where, note: f.note, seen: entry.seen + 1, sample });
+          seen.set(key, { ...entry, text: f.text, box: f.box, where: f.where, note: f.note, seen: entry.seen + 1, sample });
         }
       }
       const persistent = [...seen.values()].filter((f) => f.type === 'wide' || f.seen >= o.minSeen);
       arrived = true;
       const mine = await gate.arrive(width, persistent);
       if (signal.aborted) throw new CheckTimeout();
+      const result = (fields) => ({
+        width, loaded: true, loadMs, pageWidth: last.pageWidth, wide, control: 'none', shot: null,
+        persistentCount: persistent.length, errors: [...errors.values()], ...fields,
+      });
+      // A page that stopped answering: what was measured, and its "Hang" error.
+      if (hung) return result({});
 
-      progress.stage = 'screenshot';
+      stage('screenshot');
       let shot = null;
       const frameBox = await frameElement.boundingBox();
       if (mine.length > 0 && frameBox) {
-        await page.evaluate(drawBoxes, {
-          boxes: mine.filter((f) => f.type !== 'wide').map((f) => ({ n: f.n, box: f.box })),
-          left: frameBox.x,
-          top: frameBox.y,
-        });
-        shot = (await page.screenshot({ type: 'jpeg', quality: o.shotQuality, clip: frameBox })).toString('base64');
-        await page.evaluate(drawBoxes, { boxes: [], left: 0, top: 0 });
+        const taken = await step((async () => {
+          await page.evaluate(drawBoxes, {
+            boxes: mine.filter((f) => f.type !== 'wide').map((f) => ({ n: f.n, box: f.box })),
+            left: frameBox.x,
+            top: frameBox.y,
+          });
+          const jpeg = await page.screenshot({ type: 'jpeg', quality: o.shotQuality, clip: frameBox });
+          await page.evaluate(drawBoxes, { boxes: [], left: 0, top: 0 });
+          return jpeg;
+        })());
+        if (taken === HUNG) return result({});
+        shot = taken.toString('base64');
       }
 
-      progress.stage = 'control';
+      stage('control');
       phase = 'control';
-      const target = sanitizeTarget(
-        await frame.evaluate(pickControl, { preferSource: PREFER.source, avoidSource: AVOID.source }).catch(() => null),
-        last.viewportWidth || width,
-        last.viewportHeight || 1,
+      const picked = await step(
+        frame.evaluate(pickControl, { preferSource: PREFER.source, avoidSource: AVOID.source }).catch(() => null),
       );
+      if (picked === HUNG) return result({ shot });
+      const target = sanitizeTarget(picked, last.viewportWidth || width, last.viewportHeight || 1);
       let control = 'none';
       if (target && frameBox) {
-        await page.mouse.click(frameBox.x + target.x, frameBox.y + target.y);
         control = target.kind;
-        if (target.kind === 'range') for (let i = 0; i < o.rangeSteps; i += 1) await page.keyboard.press('ArrowRight');
+        // A click waits for the page to take it: a handler that never returns (for (;;) {}) hangs it.
+        const used = await step((async () => {
+          await page.mouse.click(frameBox.x + target.x, frameBox.y + target.y);
+          if (target.kind === 'range') for (let i = 0; i < o.rangeSteps; i += 1) await page.keyboard.press('ArrowRight');
+        })());
+        if (used === HUNG) return result({ shot, control });
       }
       await waitUntil(Date.now() + o.controlWatchMs, signal);
-      return {
-        width, loaded: true, loadMs, pageWidth: last.pageWidth, wide, control, shot, persistentCount: persistent.length,
-        errors: [...errors.values()],
-      };
+      return result({ shot, control });
     } finally {
       // A width that ends early (an error, the deadline) still reports, so the other width never waits on it.
       if (!arrived) gate.arrive(width, null);
@@ -633,25 +680,28 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
     const controller = new AbortController();
     const { signal } = controller;
     const contexts = [];
-    const progress = { stage: 'launch' };
+    // Each width's stage, for the logs: "sample,control".
+    const progress = { byWidth: {} };
+    const stageText = () => (Object.keys(progress.byWidth).length
+      ? widths.map((w) => progress.byWidth[w] || '-').join(',') : 'launch');
     const stopped = new Promise((_, reject) => {
       signal.addEventListener('abort', () => reject(new CheckTimeout()), { once: true });
     });
     stopped.catch(() => {});
     const timer = setTimeout(() => controller.abort(), o.deadlineMs);
     let launchMs = 0;
-    let work = Promise.resolve();
+    let tasks = [];
     try {
       let results;
       try {
         await Promise.race([guardedBrowser.browser(), stopped]);
         launchMs = Date.now() - t0;
         const gate = createGate(widths, o.maxFindings);
-        work = Promise.all(widths.map((w) => checkWidth(w, html, { signal, contexts, gate, progress })));
-        results = await Promise.race([work, stopped]);
+        tasks = widths.map((w) => checkWidth(w, html, { signal, contexts, gate, progress }));
+        results = await Promise.race([Promise.all(tasks), stopped]);
         const { ordered } = await gate.selection;
         const status = results.every((r) => r.loaded) ? 'ok' : 'inconclusive';
-        const errors = results.flatMap((r) => r.errors.map((e) => ({ width: r.width, ...e }))).slice(0, o.maxErrors);
+        const errors = results.flatMap((r) => r.errors.map((e) => ({ width: r.width, ...e })));
         const answer = {
           status,
           warm,
@@ -671,7 +721,7 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
         return answer;
       } catch (error) {
         if (error instanceof CheckTimeout) {
-          log.warn(`[CHECK_LAYOUT] status=timed_out stage=${progress.stage} warm=${warm} ms=${Date.now() - t0}`);
+          log.warn(`[CHECK_LAYOUT] status=timed_out stage=${stageText()} warm=${warm} ms=${Date.now() - t0}`);
           return {
             status: 'timed_out', warm, findings_total: 0, findings: [], errors: [], widths: {},
             timings: { total_ms: Date.now() - t0, launch_ms: launchMs },
@@ -679,8 +729,8 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
         }
         // Its stage and code only: the error's message can quote the page.
         const code = errorCode(error);
-        log.error(`[CHECK_LAYOUT] failed stage=${progress.stage} code=${code}`);
-        throw new CheckFailed(progress.stage, code);
+        log.error(`[CHECK_LAYOUT] failed stage=${stageText()} code=${code}`);
+        throw new CheckFailed(stageText(), code);
       }
     } finally {
       clearTimeout(timer);
@@ -690,7 +740,8 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
       const until = Date.now() + o.teardownMs;
       const closed = await within(Promise.all(contexts.map((c) => c.close().catch(() => {}))), o.teardownMs)
         .then(() => true, () => false);
-      const ended = await within(work.then(() => {}, () => {}), Math.max(0, until - Date.now()))
+      // Every width's task, not the first to fail: one stuck in newContext needs the reset too.
+      const ended = await within(Promise.allSettled(tasks), Math.max(0, until - Date.now()))
         .then(() => true, () => false);
       if (!closed || !ended) {
         log.warn(`[CHECK_LAYOUT] teardown stalled (closed=${closed} ended=${ended}); resetting the browser`);

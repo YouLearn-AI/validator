@@ -71,6 +71,13 @@ const PAGES = {
     const c = document.getElementById('c').getContext('2d'); c.font = '16px sans-serif';
     function draw() { c.clearRect(0, 0, 100, 40); c.fillText('Hidden caption', 130, 26); requestAnimationFrame(draw); }
     draw();</script>`),
+  // A Start button whose handler never returns.
+  hangOnClick: page('<p>Press it</p><button onclick="for (;;) {}">Start</button>'),
+  // Throws an error quoting a new number every frame, and grows wider every frame.
+  numbers: page(`<div id="bar" style="height:20px;background:#ccc;width:420px"></div><p>Growing</p><script>
+    let n = 0; const bar = document.getElementById('bar');
+    (function tick() { requestAnimationFrame(tick); n += 1; bar.style.width = (420 + n) + 'px';
+      throw new RangeError('radius ' + n + ' is too large'); })();</script>`),
   // Spins forever once loaded.
   hang: page('<p>Spins</p><script>setTimeout(() => { for (;;) {} }, 200);</script>'),
 };
@@ -326,13 +333,36 @@ describe('layout check (Chromium)', { timeout: 300_000 }, () => {
     assert.equal(r.widths['390'].load_ms, null);
   });
 
-  test('a page that hangs is ended at the deadline ("timed_out") and the next check runs', async () => {
-    const t0 = Date.now();
-    const r = await checker({ deadlineMs: 4000 })({ html: PAGES.hang });
-    assert.equal(r.status, 'timed_out');
-    assert.ok(Date.now() - t0 < 4000 + CHECK_DEFAULTS.teardownMs + 2000, `${Date.now() - t0} ms`);
+  test('a page that hangs while it is measured answers a "Hang" error at load, and the next check runs', async () => {
+    const r = await checker({ stepTimeoutMs: 1500 })({ html: PAGES.hang });
+    assert.equal(r.status, 'ok');
+    assert.deepEqual(r.errors.map((e) => `${e.width}:${e.phase}:${e.name}`).sort(), ['1280:load:Hang', '390:load:Hang']);
+    assert.equal(r.widths['390'].control, 'none');
     const next = await checker()({ html: PAGES.clean });
     assert.equal(next.status, 'ok');
+  });
+
+  test('a control whose handler never returns answers a "Hang" error in the control phase', async () => {
+    const r = await checker({ stepTimeoutMs: 1500 })({ html: PAGES.hangOnClick, widths: [390] });
+    assert.equal(r.status, 'ok');
+    assert.deepEqual(r.errors.map((e) => `${e.phase}:${e.name}`), ['control:Hang']);
+    assert.equal(r.widths['390'].control, 'button');
+  });
+
+  test('past the deadline the answer is "timed_out" and the next check runs', async () => {
+    const t0 = Date.now();
+    const r = await checker({ deadlineMs: 1500 })({ html: PAGES.hang });
+    assert.equal(r.status, 'timed_out');
+    assert.ok(Date.now() - t0 < 1500 + CHECK_DEFAULTS.teardownMs + 2000, `${Date.now() - t0} ms`);
+    const next = await checker()({ html: PAGES.clean });
+    assert.equal(next.status, 'ok');
+  });
+
+  test('an error whose message quotes a changing number is one error; a page grown wider is one "wide"', async () => {
+    const r = await checker()({ html: PAGES.numbers, widths: [390] });
+    // Thrown every frame: once at load and once after the control, not once a frame.
+    assert.deepEqual(r.errors.map((e) => `${e.phase}:${e.name}`).sort(), ['control:RangeError', 'load:RangeError']);
+    assert.equal(r.findings.filter((f) => f.type === 'wide').length, 1, JSON.stringify(r.findings));
   });
 
   test('one check at a time', async () => {
