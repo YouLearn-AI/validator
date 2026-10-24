@@ -1,7 +1,8 @@
 // A short looping clip of an interactive, for og:video in share-link previews (ops I-609).
 //
 // Filmed like the research harness (docs/research/product/2026-10-22-i609-og-video, record.mjs and encode.sh in
-// the youlearn hub): a 1200x630 viewport, Playwright's fake clock paused so that every frame is exactly 1/30 s
+// the youlearn hub): a 1200x630 viewport (1920x1008 filmed at 0.625, the same pixels, for a page whose docked
+// panels cover 30% or more of it), Playwright's fake clock paused so that every frame is exactly 1/30 s
 // of page time after the one before (1/15 or 1/10 s for a page too slow to film at 30), whatever the screenshot
 // costs. CSS animations and transitions are not driven by that clock: their timeline is held still (CDP
 // Animation.setPlaybackRate 0) and each step moves the Web Animations on by the same page time. The page is
@@ -32,8 +33,17 @@ import { checkUrl, UrlRefused } from './egress-guard.mjs';
 import { errorCode } from './request-errors.mjs';
 
 export const VIDEO_DEFAULTS = Object.freeze({
+  // The clip, in pixels.
   width: 1200,
   height: 630,
+  // A page laid out for a taller screen can dock panels over its scene (position: fixed). When they cover
+  // dockedShare or more of the clip's viewport after the settle, the page is loaded again in a viewport
+  // dockedLayoutScale times the clip and filmed at 1/dockedLayoutScale device pixels per CSS pixel: the clip is
+  // still width x height pixels, and the panels take a smaller share of it (one interactive's control panel: 45% of
+  // the frame at 1200x630, about 18% at 1920x1008, ops I-609). Every other page is filmed as before: in the larger
+  // layout a page centred in a max-width column shrinks, its motion with it, and a render takes 1.3-2x as long.
+  dockedShare: 0.3,
+  dockedLayoutScale: 1.6,
   fps: 30,
   // The slower frame rates a clip may drop to when the page draws too slowly to film every frame by the deadline;
   // each divides fps, so the frames already filmed hold every frame of the slower clip.
@@ -161,6 +171,40 @@ function pickControl(preferSource) {
   return { kind, x: r.left + r.width / 2, y: r.top + r.height / 2 };
 }
 
+// Runs in the page: the share of the viewport (0-1) whose topmost element is in a docked panel, a box with
+// position fixed that covers less than `maxBox` of the viewport (a full-screen fixed canvas is the scene, not a
+// panel). Sampled at the centres of a cols x rows grid. A sticky box is not counted: unscrolled, as filmed, it sits
+// in the page's flow (a sticky sidebar measured 31% on one page, and the larger layout cost its clip its motion).
+function dockedShareOf({ maxBox, cols, rows }) {
+  const docked = new Map();
+  const inPanel = (el) => {
+    if (!el || el === document.documentElement || el === document.body) return false;
+    if (!docked.has(el)) {
+      let value;
+      if (getComputedStyle(el).position === 'fixed') {
+        const r = el.getBoundingClientRect();
+        value = r.width * r.height < maxBox * innerWidth * innerHeight || inPanel(el.parentElement);
+      } else {
+        value = inPanel(el.parentElement);
+      }
+      docked.set(el, value);
+    }
+    return docked.get(el);
+  };
+  let hits = 0;
+  for (let i = 0; i < cols; i += 1) {
+    for (let j = 0; j < rows; j += 1) {
+      if (inPanel(document.elementFromPoint(((i + 0.5) * innerWidth) / cols, ((j + 0.5) * innerHeight) / rows))) hits += 1;
+    }
+  }
+  return hits / (cols * rows);
+}
+
+/** The share dockedShareOf reported, checked in Node (a page can tamper with it): a number in [0, 1], else 0. */
+export function sanitizeShare(raw) {
+  return typeof raw === 'number' && Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 0;
+}
+
 // Runs a command and settles only once it has exited. On abort it gets SIGTERM, then SIGKILL after a grace.
 const CONTROL_KINDS = new Set(['button', 'range', 'canvas/svg']);
 
@@ -283,6 +327,17 @@ function within(promise, ms) {
  */
 export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPEG_PATH || 'ffmpeg', checkOptions = {}, options = {}, log = console } = {}) {
   const o = { ...VIDEO_DEFAULTS, ...options };
+  if (!(Number.isFinite(o.dockedLayoutScale) && o.dockedLayoutScale >= 1)) throw new Error('dockedLayoutScale must be a number >= 1');
+  if (!(typeof o.dockedShare === 'number' && o.dockedShare > 0)) throw new Error('dockedShare must be a number > 0');
+  // A layout: the CSS viewport the page is laid out in, and the device pixels per CSS pixel that film it at the
+  // clip's size.
+  const layoutAt = (scale) => {
+    const viewport = { width: Math.round(o.width * scale), height: Math.round(o.height * scale) };
+    return { viewport, deviceScaleFactor: o.width / viewport.width };
+  };
+  const CLIP_LAYOUT = layoutAt(1);
+  const DOCKED_LAYOUT = layoutAt(o.dockedLayoutScale);
+  const DOCKED_SAMPLE = { maxBox: 0.6, cols: 60, rows: 32 };
   let busy = false;
 
   // What one render holds, released once, last first, each step within o.teardownMs. A resource acquired
@@ -329,18 +384,14 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
   const tickName = (tick) => `t${String(tick).padStart(4, '0')}.jpg`;
   const frameName = (i) => `f${String(i).padStart(4, '0')}.jpg`;
 
-  async function film(url, signal, scope, files, frames, progress, deadlineAt) {
-    const t0 = Date.now();
-    progress.stage = 'check_url';
-    await checkUrl(url, { log, ...checkOptions });
+  const settledMs = Math.round(o.settleMs);
+
+  // Opens the page in `layout` with its clock paused before its first script, loads it and settles it to
+  // settledMs. Returns the context, the page, and whether the page is cheap enough to step frame by frame.
+  async function load(url, layout, scope, progress) {
     progress.stage = 'open';
     scope.check();
-    const dir = await files.own(await fs.mkdtemp(path.join(os.tmpdir(), 'i609-')), (d) => fs.rm(d, { recursive: true, force: true }));
-    frames.dir = dir;
-    const context = await scope.own(
-      await guardedBrowser.newContext({ viewport: { width: o.width, height: o.height }, deviceScaleFactor: 1 }),
-      (c) => c.close(),
-    );
+    const context = await scope.own(await guardedBrowser.newContext(layout), (c) => c.close());
     const page = await context.newPage();
     // CSS animations and transitions don't follow the fake clock. Their timeline is held still from the first
     // document on (playback rate 0); stepAnimations moves them on with the page's clock.
@@ -362,7 +413,6 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     // Web Animations move by the same amount, so the two clocks stay together.
     let everyFrame = true; // runFor while the page is cheap, else fastForward
     const advance = (ms) => (everyFrame ? page.clock.runFor(ms) : page.clock.fastForward(ms));
-    const settledMs = Math.round(o.settleMs);
     let pageMs = 0;
     const tSettle = Date.now();
     await page.evaluate(stepAnimations, 0);
@@ -378,6 +428,34 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     }
     if (Date.now() - tSettle > o.settleBudgetMs) everyFrame = false;
     await page.evaluate(stepAnimations, settledMs);
+    return { context, page, everyFrame };
+  }
+
+  async function film(url, signal, scope, files, frames, progress, deadlineAt) {
+    const t0 = Date.now();
+    progress.stage = 'check_url';
+    await checkUrl(url, { log, ...checkOptions });
+    progress.stage = 'open';
+    scope.check();
+    const dir = await files.own(await fs.mkdtemp(path.join(os.tmpdir(), 'i609-')), (d) => fs.rm(d, { recursive: true, force: true }));
+    frames.dir = dir;
+    let layout = CLIP_LAYOUT;
+    const tLoad = Date.now();
+    let { context, page, everyFrame } = await load(url, layout, scope, progress);
+    const loadMs = Date.now() - tLoad;
+    // Panels docked over the page: measured as frame 0 shows it. With enough of them the page is loaded again in
+    // the larger layout, while a second load as long as the first still leaves half the deadline to film.
+    // A dockedShare over 1 turns the measurement off.
+    progress.stage = 'measure';
+    const docked = o.dockedShare <= 1 ? sanitizeShare(await page.evaluate(dockedShareOf, DOCKED_SAMPLE)) : 0;
+    if (docked >= o.dockedShare && o.dockedLayoutScale > 1 && loadMs * 4 <= o.deadlineMs) {
+      await context.close().catch(() => {});
+      layout = DOCKED_LAYOUT;
+      ({ context, page, everyFrame } = await load(url, layout, scope, progress));
+    }
+    const { viewport } = layout;
+    const advance = (ms) => (everyFrame ? page.clock.runFor(ms) : page.clock.fastForward(ms));
+    let pageMs = settledMs;
 
     const before = Math.round(o.beforeSeconds * o.fps);
     const minTicks = Math.round(o.minSeconds * o.fps);
@@ -402,7 +480,7 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       if (!picked && tick >= before) {
         picked = true;
         // What the page returns is the page's: only a known kind and a point inside the viewport are used.
-        target = sanitizeTarget(await page.evaluate(pickControl, PREFER.source), o.width, o.height);
+        target = sanitizeTarget(await page.evaluate(pickControl, PREFER.source), viewport.width, viewport.height);
         if (target) {
           await page.mouse.click(target.x, target.y);
           actionKind = target.kind;
@@ -458,6 +536,8 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
     // actionKind (button, range, canvas/svg, none) is the only trace of the control: its label is page text.
     const base = {
       url_host: new URL(url).host, fps, actionKind, captureMs, frameMs: frameMs === null ? null : Math.round(frameMs),
+      // The share of the clip's viewport under docked panels, and the CSS viewport the clip was filmed in.
+      dockedShare: Math.round(docked * 100) / 100, layout: `${viewport.width}x${viewport.height}`,
     };
     if (tooSlow) {
       const meta = { ...base, frames: filmed.length, seconds: 0, motion: null, totalMs: Date.now() - t0 };
@@ -530,7 +610,8 @@ export function createVideoRenderer(guardedBrowser, { ffmpeg = process.env.FFMPE
       log.info(`[RENDER_VIDEO] host=${meta.url_host} video=${Boolean(result.video)} reason=${result.reason || '-'} `
         + `action=${meta.actionKind} max_ydif=${meta.motion ? meta.motion.maxYdif.toFixed(2) : '-'} `
         + `moving=${meta.motion ? meta.motion.movingFrames : '-'} fps=${meta.fps} frames=${meta.frames} `
-        + `frame_ms=${meta.frameMs ?? '-'} ms=${meta.totalMs} bytes=${meta.bytes || 0}`);
+        + `frame_ms=${meta.frameMs ?? '-'} docked=${Math.round(meta.dockedShare * 100)} layout=${meta.layout} `
+        + `ms=${meta.totalMs} bytes=${meta.bytes || 0}`);
       return result;
     } finally {
       clearTimeout(timer);

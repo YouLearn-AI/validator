@@ -16,7 +16,7 @@ import { chromium } from 'playwright';
 import { GuardedBrowser } from '../guarded-browser.mjs';
 import { createVideoApp } from '../video-app.mjs';
 import {
-  createVideoRenderer, encodeLoop, fitCapture, RenderBusy, RenderTimeout, sanitizeTarget, VIDEO_DEFAULTS,
+  createVideoRenderer, encodeLoop, fitCapture, RenderBusy, RenderTimeout, sanitizeShare, sanitizeTarget, VIDEO_DEFAULTS,
 } from '../video-renderer.mjs';
 
 const FAKE_PUBLIC = '93.184.216.34';
@@ -103,6 +103,42 @@ const PAGES = {
       function tick(now) { t += Math.min(0.05, (now - last) / 1000); last = now;
         document.getElementById('w').style.opacity = String(Math.min(1, t)); requestAnimationFrame(tick); }
       requestAnimationFrame(tick);</script></body>`,
+  // Laid out for a tall screen: a full-screen fixed canvas (the scene, not a panel), a black panel 300 CSS px tall
+  // docked at the bottom (47% of 1200x630), and a Start button at CSS (1450, 760), on screen only in a larger
+  // viewport. Clicked, it moves a square above the panel.
+  '/docked': `<!doctype html><body style="margin:0;background:#fff;overflow:hidden">
+    <canvas id="c" style="position:fixed;inset:0;width:100%;height:100%"></canvas>
+    <div style="position:fixed;left:0;right:0;bottom:0;height:300px;background:#000"></div>
+    <button id="go" style="position:absolute;left:1450px;top:760px;width:100px;height:40px;z-index:1">Start</button>
+    <script>const el = document.getElementById('c'); el.width = innerWidth; el.height = innerHeight;
+      const c = el.getContext('2d'); let x = 0, on = false;
+      const go = document.getElementById('go'); if (go) go.onclick = () => { on = true; };
+      (function tick() { if (on) x = (x + 12) % 1080; c.fillStyle = '#fff'; c.fillRect(0, 0, el.width, el.height);
+        c.fillStyle = '#c40'; c.fillRect(x, 100, 120, 120); requestAnimationFrame(tick); })();</script></body>`,
+  // The same scene with a panel 170 CSS px tall: 27% of 1200x630, under the 30% that re-lays a page out.
+  '/docked-below': `<!doctype html><body style="margin:0;background:#fff;overflow:hidden">
+    <canvas id="c" style="position:fixed;inset:0;width:100%;height:100%"></canvas>
+    <div style="position:fixed;left:0;right:0;bottom:0;height:170px;background:#000"></div>
+    <script>const el = document.getElementById('c'); el.width = innerWidth; el.height = innerHeight;
+      const c = el.getContext('2d'); let x = 0, on = false;
+      const go = document.getElementById('go'); if (go) go.onclick = () => { on = true; };
+      (function tick() { if (on) x = (x + 12) % 1080; c.fillStyle = '#fff'; c.fillRect(0, 0, el.width, el.height);
+        c.fillStyle = '#c40'; c.fillRect(x, 100, 120, 120); requestAnimationFrame(tick); })();</script></body>`,
+  // The 300 px panel on a page whose load takes 3.5 s (an image that answers late).
+  '/docked-slow': `<!doctype html><body style="margin:0;background:#fff;overflow:hidden">
+    <canvas id="c" style="position:fixed;inset:0;width:100%;height:100%"></canvas>
+    <div style="position:fixed;left:0;right:0;bottom:0;height:300px;background:#000"></div>
+    <button id="go" style="position:absolute;left:1450px;top:760px;width:100px;height:40px;z-index:1">Start</button>
+    <img src="/delay?ms=3500" alt="">
+    <script>const el = document.getElementById('c'); el.width = innerWidth; el.height = innerHeight;
+      const c = el.getContext('2d'); let x = 0, on = false;
+      const go = document.getElementById('go'); if (go) go.onclick = () => { on = true; };
+      (function tick() { if (on) x = (x + 12) % 1080; c.fillStyle = '#fff'; c.fillRect(0, 0, el.width, el.height);
+        c.fillStyle = '#c40'; c.fillRect(x, 100, 120, 120); requestAnimationFrame(tick); })();</script></body>`,
+  // A scrolling page with a sticky sidebar column (40% of the width): in the page's flow, not docked over it.
+  '/sticky-column': `<!doctype html><body style="margin:0;display:flex;align-items:flex-start">
+    <main style="flex:1;height:2000px;background:#eef"></main>
+    <aside style="position:sticky;top:0;width:40%;height:100vh;background:#333"></aside></body>`,
   // Every frame new noise: the worst case for the clip's size.
   '/noise': `<!doctype html><body style="margin:0"><canvas id="c" width="1200" height="630"></canvas><script>
       const c = document.getElementById('c').getContext('2d'); const img = c.createImageData(1200, 630);
@@ -132,6 +168,13 @@ function jpegSize(buffer) {
     i += 2 + length;
   }
   return null;
+}
+
+// Mean luma (0-255) of rows y to y + h of an image file, across its whole width.
+function rowsLuma(file, y, h) {
+  const result = spawnSync('ffmpeg', ['-hide_banner', '-i', file, '-vf',
+    `crop=iw:${h}:0:${y},signalstats,metadata=mode=print:key=lavfi.signalstats.YAVG:file=-`, '-f', 'null', '-'], { encoding: 'utf8' });
+  return Number(/YAVG=([0-9.]+)/.exec(result.stdout)[1]);
 }
 
 describe('video renderer', { timeout: 300_000 }, () => {
@@ -292,6 +335,66 @@ describe('video renderer', { timeout: 300_000 }, () => {
     assert.equal(result.video, null);
     assert.equal(result.reason, 'no_motion');
     assert.deepEqual(jpegSize(result.frame), { width: 1200, height: 630 });
+  });
+
+  test('panels docked over 30% of the page: it is filmed laid out at 1920x1008, still 1200x630 pixels, and the click lands in that layout', async () => {
+    const result = await renderer()({ url: url('/docked') });
+    assert.ok(result.meta.dockedShare >= 0.45 && result.meta.dockedShare < 0.5, JSON.stringify(result.meta));
+    assert.equal(result.meta.layout, '1920x1008');
+    // Only the Start button at CSS (1450, 760) moves anything: the click was made in the 1920x1008 layout.
+    assert.ok(result.video, JSON.stringify(result.meta));
+    assert.equal(result.meta.actionKind, 'button');
+    const file = path.join(tmpDir, 'docked.mp4');
+    fs.writeFileSync(file, result.video);
+    const [v] = probe(file).streams;
+    assert.equal(`${v.width}x${v.height}`, '1200x630');
+    assert.deepEqual(jpegSize(result.frame), { width: 1200, height: 630 });
+    // The 300 CSS px panel at 0.625 device px per CSS px: the bottom 188 rows; rows 340-400 show the scene.
+    const frame = path.join(tmpDir, 'docked.jpg');
+    fs.writeFileSync(frame, result.frame);
+    assert.ok(rowsLuma(frame, 340, 60) > 200, `rows 340-400: ${rowsLuma(frame, 340, 60)}`);
+    assert.ok(rowsLuma(frame, 450, 180) < 30, `rows 450-630: ${rowsLuma(frame, 450, 180)}`);
+  });
+
+  test('panels docked over less than 30%: the page is filmed as before, at 1200x630', async () => {
+    const result = await renderer()({ url: url('/docked-below') });
+    assert.ok(result.meta.dockedShare > 0.2 && result.meta.dockedShare < 0.3, JSON.stringify(result.meta));
+    assert.equal(result.meta.layout, '1200x630');
+    const frame = path.join(tmpDir, 'docked-below.jpg');
+    fs.writeFileSync(frame, result.frame);
+    // The 170 px panel at 1 device px per CSS px: rows 460-630.
+    assert.ok(rowsLuma(frame, 400, 50) > 200, `rows 400-450: ${rowsLuma(frame, 400, 50)}`);
+    assert.ok(rowsLuma(frame, 470, 160) < 30, `rows 470-630: ${rowsLuma(frame, 470, 160)}`);
+  });
+
+  test('a sticky sidebar is part of the page, not a docked panel: the page is filmed at 1200x630', async () => {
+    const result = await renderer()({ url: url('/sticky-column') });
+    assert.equal(result.meta.dockedShare, 0, JSON.stringify(result.meta));
+    assert.equal(result.meta.layout, '1200x630');
+  });
+
+  test('with no docked panel the clip is today\'s: the same frame 0 and frames as with the measurement off', async () => {
+    // The settle frame by frame in both: on a loaded machine a settle over its budget jumps, and that alone moves
+    // this page's frame 0 (about 35 dB), measured or not.
+    const measured = await renderer({ settleBudgetMs: 100_000 })({ url: url('/auto') });
+    const today = await renderer({ settleBudgetMs: 100_000, dockedShare: 2 })({ url: url('/auto') });
+    assert.equal(measured.meta.dockedShare, 0);
+    assert.equal(measured.meta.layout, '1200x630');
+    assert.equal(today.meta.layout, '1200x630');
+    assert.equal(measured.meta.frames, today.meta.frames);
+    assert.equal(measured.meta.fps, today.meta.fps);
+    fs.writeFileSync(path.join(tmpDir, 'measured.jpg'), measured.frame);
+    fs.writeFileSync(path.join(tmpDir, 'today.jpg'), today.frame);
+    const psnr = spawnSync('ffmpeg', ['-hide_banner', '-i', path.join(tmpDir, 'measured.jpg'), '-i', path.join(tmpDir, 'today.jpg'),
+      '-lavfi', 'psnr', '-f', 'null', '-'], { encoding: 'utf8' }).stderr;
+    const db = /average:(inf|[0-9.]+)/.exec(psnr)[1];
+    assert.ok(db === 'inf' || Number(db) > 40, `frame 0 PSNR ${db} dB`);
+  });
+
+  test('a page whose load took over a quarter of the deadline is not loaded again: it is filmed at 1200x630', async () => {
+    const result = await renderer({ deadlineMs: 12_000, reserveMs: 2000 })({ url: url('/docked-slow') });
+    assert.ok(result.meta.dockedShare >= 0.45, JSON.stringify(result.meta));
+    assert.equal(result.meta.layout, '1200x630');
   });
 
   test('a CSS animation is filmed at page time: two renders give the same clip', async () => {
@@ -755,6 +858,22 @@ describe('video renderer teardown', { timeout: 120_000 }, () => {
       assert.deepEqual(fitCapture({ next: 20, stride: 2, end: 120, frameMs: 1000, msLeft: 30_000 }, limits), { stride: 2, end: 80 });
       assert.equal(fitCapture({ next: 20, stride: 2, end: 120, frameMs: 1000, msLeft: 10_000 }, limits), null);
     });
+  });
+
+  test('a dockedLayoutScale under 1 or a dockedShare of 0 or under, or either not a number, is refused', () => {
+    for (const dockedLayoutScale of [0.5, 0, Number.NaN, '2']) {
+      assert.throws(() => createVideoRenderer(null, { options: { dockedLayoutScale } }), /dockedLayoutScale/, String(dockedLayoutScale));
+    }
+    for (const dockedShare of [0, -1, Number.NaN, '0.3']) {
+      assert.throws(() => createVideoRenderer(null, { options: { dockedShare } }), /dockedShare/, String(dockedShare));
+    }
+  });
+
+  test('only a number in [0, 1] leaves the page as the docked share', () => {
+    assert.equal(sanitizeShare(0.47), 0.47);
+    assert.equal(sanitizeShare(7), 1);
+    assert.equal(sanitizeShare(-3), 0);
+    for (const raw of [null, undefined, Number.NaN, Infinity, '0.9', { valueOf: () => 1 }, [0.9]]) assert.equal(sanitizeShare(raw), 0, String(raw));
   });
 
   test('only a known control kind and a point inside the viewport leave the page', () => {
