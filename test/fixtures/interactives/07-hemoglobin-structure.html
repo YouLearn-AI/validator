@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hemoglobin</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Figtree:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f4ece6;--panel:#fffaf6;--ink:#2a1713;--mut:#7a6258;--acc:#b3201f;--line:#e0cfc4;--blue:#2f6d9e;--shadow:0 6px 24px rgba(80,30,20,.12)}
+@media(prefers-color-scheme:dark){:root{--bg:#120a0a;--panel:#1d1210;--ink:#f3e4dc;--mut:#a58c82;--acc:#ff5a4d;--line:#3a2420;--blue:#6fb4e8;--shadow:0 6px 24px rgba(0,0,0,.5)}}
+*{box-sizing:border-box}
+body{margin:0;font-family:'Figtree',sans-serif;background:var(--bg);color:var(--ink);height:100vh;overflow:hidden}
+#app{display:grid;grid-template-columns:1fr 290px;height:100vh;gap:12px;padding:12px}
+@media(max-width:760px){#app{grid-template-columns:1fr;grid-template-rows:55vh auto;overflow:auto}body{overflow:auto}}
+#stage{position:relative;border-radius:16px;overflow:hidden;box-shadow:var(--shadow);background:radial-gradient(ellipse at 50% 40%,#3a1a17 0%,#1a0b0a 70%,#0c0505 100%);min-height:300px}
+canvas{display:block;width:100%;height:100%;cursor:grab}
+canvas:active{cursor:grabbing}
+.lbl{position:absolute;pointer-events:none;font-size:12px;font-weight:600;color:#fff;text-shadow:0 1px 3px #000;transform:translate(-50%,-50%);white-space:nowrap;transition:opacity .2s}
+.lbl.a{color:#ff9f95}.lbl.b{color:#8fc7f2}.lbl.h{color:#ffd37a}.lbl.o{color:#ff6a5e}
+#side{background:var(--panel);border-radius:16px;box-shadow:var(--shadow);padding:16px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.state{font-family:'Fraunces',serif;font-size:26px;font-weight:700;line-height:1}
+.state small{display:block;font:600 12px 'Figtree';color:var(--mut);margin-top:6px}
+.bar{height:10px;border-radius:6px;background:var(--line);overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--blue),var(--acc));transition:width .5s}
+.sites{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+button{font:600 13px 'Figtree';border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:9px;border-radius:10px;cursor:pointer;transition:.15s}
+button:hover{border-color:var(--acc)}button:focus-visible{outline:2px solid var(--acc)}
+button.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+.row{display:flex;gap:8px}.row button{flex:1}
+.note{font-size:12.5px;line-height:1.5;color:var(--mut);border-left:3px solid var(--acc);padding-left:10px}
+.tag{font-size:11px;color:var(--mut);line-height:1.4;border-top:1px solid var(--line);padding-top:10px}
+label.t{display:flex;gap:8px;align-items:center;font-size:13px;cursor:pointer}
+.sub{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--mut);font-weight:600}
+</style>
+</head>
+<body>
+<div id="app">
+<div id="stage"><canvas id="cv" aria-label="3D hemoglobin model, drag to rotate"></canvas><div id="labels"></div></div>
+<div id="side">
+<div><div class="sub">Conformation</div><div class="state" id="st">T state<small id="sts">Tense · low O₂ affinity</small></div></div>
+<div><div class="sub">O₂ bound: <span id="cnt">0</span> / 4</div><div class="bar" style="margin-top:6px"><i id="fill"></i></div></div>
+<div class="sub">Heme sites (click to bind / release)</div>
+<div class="sites" id="sites"></div>
+<div class="row"><button id="add">+ Add O₂</button><button id="rem">− Remove O₂</button></div>
+<div class="row"><button id="rot" class="on">Auto-rotate</button><button id="rst">Reset</button></div>
+<label class="t"><input type="checkbox" id="lab" checked> Show labels</label>
+<div class="note" id="exp"></div>
+<div class="tag"><b>Model note:</b> Backbone is a schematic α-carbon-style ribbon arranged as eight helices per subunit (A–H) in the α₂β₂ tetrahedral-like layout of HbA (cf. PDB 2HHB / 1HHO). Atomic coordinates and the T→R motion (~15° rotation of the αβ dimers, plus iron moving into the heme plane) are approximated, not exact.</div>
+</div></div>
+<script type="importmap">{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+const cv=document.getElementById('cv'),stage=document.getElementById('stage');
+const renderer=new THREE.WebGLRenderer({canvas:cv,antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+const scene=new THREE.Scene();
+const cam=new THREE.PerspectiveCamera(40,1,.1,200);cam.position.set(0,6,30);
+const ctl=new OrbitControls(cam,cv);ctl.enableDamping=true;ctl.autoRotate=true;ctl.autoRotateSpeed=1.2;ctl.minDistance=14;ctl.maxDistance=60;
+scene.add(new THREE.HemisphereLight(0xffe6dc,0x201010,.9));
+const dl=new THREE.DirectionalLight(0xffffff,1.6);dl.position.set(10,15,20);scene.add(dl);
+const dl2=new THREE.DirectionalLight(0x6fa8ff,.6);dl2.position.set(-15,-5,-10);scene.add(dl2);
+// Subunit layout: [type, position, orientation seed]
+const subs=[
+{t:'a',p:new THREE.Vector3(-5,3.2,1.5),c:0xd9594a},
+{t:'b',p:new THREE.Vector3(-4.5,-3.8,-1.5),c:0x3f86bf},
+{t:'a',p:new THREE.Vector3(5,-3.2,-1.5),c:0xe8806f},
+{t:'b',p:new THREE.Vector3(4.5,3.8,1.5),c:0x5fa3d6}];
+// dimers: (0,1) and (2,3). T->R: rotate one dimer ~15deg about Y and pull together
+const root=new THREE.Group();scene.add(root);
+const dimerA=new THREE.Group(),dimerB=new THREE.Group();root.add(dimerA,dimerB);
+function rnd(s){let x=s;return()=>{x=Math.sin(x)*10000;return x-Math.floor(x)}}
+function helixChain(seed,len,col,isB){
+ const g=new THREE.Group();const r=rnd(seed);
+ const mat=new THREE.MeshPhysicalMaterial({color:col,roughness:.35,clearcoat:.6,clearcoatRoughness:.25,metalness:.05});
+ // 8 helices arranged around a heme pocket, connected by loops
+ const n=isB?8:7;let pts=[];
+ for(let h=0;h<n;h++){
+  const ang=h/n*Math.PI*2+r()*.4,rad=3.0+r()*1.4;
+  const cx=Math.cos(ang)*rad,cz=Math.sin(ang)*rad*.8,cy=(r()-.5)*3.5;
+  const dir=new THREE.Vector3(r()-.5,r()-.5,r()-.5).normalize().multiplyScalar(2.2);
+  const u=new THREE.Vector3().crossVectors(dir,new THREE.Vector3(0,1,.3)).normalize();
+  const v=new THREE.Vector3().crossVectors(dir,u).normalize();
+  const c=new THREE.Vector3(cx,cy,cz);
+  for(let i=0;i<=24;i++){const s=i/24,a=s*Math.PI*5;
+   pts.push(c.clone().addScaledVector(dir,(s-.5)*2).addScaledVector(u,Math.cos(a)*.55).addScaledVector(v,Math.sin(a)*.55));}
+ }
+ const curve=new THREE.CatmullRomCurve3(pts,false,'catmullrom',.4);
+ const geo=new THREE.TubeGeometry(curve,pts.length*3,.26,8,false);
+ g.add(new THREE.Mesh(geo,mat));
+ // translucent surface blob for body
+ const blob=new THREE.Mesh(new THREE.SphereGeometry(4.6,24,18),new THREE.MeshPhysicalMaterial({color:col,transparent:true,opacity:.12,roughness:.6,depthWrite:false}));
+ blob.scale.set(1,.95,.85);g.add(blob);
+ return g;
+}
+const heme=[],fes=[],o2s=[];
+const hemeMat=new THREE.MeshPhysicalMaterial({color:0x8a0f14,roughness:.3,clearcoat:1,emissive:0x2a0000});
+const feMat=new THREE.MeshStandardMaterial({color:0xc8553a,metalness:.9,roughness:.25,emissive:0x331005});
+subs.forEach((s,i)=>{
+ const grp=new THREE.Group();grp.position.copy(s.p);
+ grp.add(helixChain(11+i*7,0,s.c,s.t==='b'));
+ grp.rotation.set(i*.7,i*1.3,i*.4);
+ // heme in its own sub-group, not rotated so plane faces outward
+ const hg=new THREE.Group();
+ const ring=new THREE.Mesh(new THREE.TorusGeometry(1.0,.28,12,32),hemeMat);ring.rotation.x=Math.PI/2;hg.add(ring);
+ const disk=new THREE.Mesh(new THREE.CylinderGeometry(1.05,1.05,.18,32),hemeMat);hg.add(disk);
+ for(let k=0;k<4;k++){const a=k*Math.PI/2+Math.PI/4;const pyr=new THREE.Mesh(new THREE.SphereGeometry(.34,14,10),hemeMat);pyr.position.set(Math.cos(a)*.95,0,Math.sin(a)*.95);hg.add(pyr);}
+ const fe=new THREE.Mesh(new THREE.SphereGeometry(.42,24,16),feMat);fe.position.y=-.35;hg.add(fe);
+ // O2 molecule (two bonded atoms), starts hidden
+ const o=new THREE.Group();
+ const om=new THREE.MeshPhysicalMaterial({color:0xff3a30,roughness:.2,clearcoat:1,emissive:0x550800});
+ const a1=new THREE.Mesh(new THREE.SphereGeometry(.34,16,12),om),a2=a1.clone();
+ a1.position.set(-.3,0,0);a2.position.set(.3,0,0);
+ const bond=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,.5,8),om);bond.rotation.z=Math.PI/2;
+ o.add(a1,a2,bond);o.position.set(0,1.8,0);o.rotation.z=.9;o.visible=false;o.scale.setScalar(.01);
+ hg.add(o);
+ hg.position.copy(new THREE.Vector3(s.p.x>0?-.3:.3,0,0)).multiplyScalar(0).add(new THREE.Vector3(s.p.x>0?-1.5:1.5,s.p.y>0?-1:1,0));
+ hg.rotation.z=i%2?0.5:-0.5;
+ (i<2?dimerA:dimerB).add(grp);
+ const hw=new THREE.Group();hw.position.copy(s.p).add(hg.position);hw.rotation.copy(hg.rotation);
+ hw.add(new THREE.Group());
+ hg.position.set(0,0,0);hg.rotation.set(0,0,0);hw.add(hg);
+ (i<2?dimerA:dimerB).add(hw);
+ heme.push(hw);fes.push(fe);o2s.push(o);hw.userData.hg=hg;
+});
+// Central cavity marker (2,3-BPG pocket) subtle ring
+const cav=new THREE.Mesh(new THREE.TorusGeometry(1.8,.05,8,40),new THREE.MeshBasicMaterial({color:0xffd37a,transparent:true,opacity:.35}));
+cav.rotation.x=Math.PI/2;root.add(cav);
+// state
+const bound=[false,false,false,false];
+let R=0,Rt=0;// 0=T,1=R
+const tgt=[0,0,0,0],cur=[0,0,0,0];
+// Hill-like transition: R fraction depends on number bound (cooperative)
+const rMap=[0,.12,.5,.88,1];
+const exps=[
+'Deoxy-Hb (T state): Fe²⁺ sits slightly out of the heme plane, pulled by the proximal His. Salt bridges between subunits hold the tetramer tense; O₂ binds reluctantly.',
+'One O₂ bound: Fe²⁺ is pulled into the heme plane, tugging the proximal histidine and F-helix. This strain pushes on the α₁β₂ interface — the structure is still mostly T.',
+'Two O₂ bound: salt bridges are breaking and the αβ dimers begin rotating ~15° relative to each other. The T→R switch is near its midpoint.',
+'Three O₂ bound: the tetramer is nearly in the R state, so the last site now has high affinity — about 100× that of the first.',
+'Four O₂ bound (R state): fully relaxed, high affinity. Cooperativity arises from this shift in subunit contacts — O₂ binds only at the Fe, never to the protein surface.'];
+function update(){
+ const n=bound.filter(Boolean).length;Rt=rMap[n];
+ document.getElementById('cnt').textContent=n;
+ document.getElementById('fill').style.width=(n*25)+'%';
+ document.getElementById('exp').textContent=exps[n];
+ const s=n>=3?'R state':n===2?'T ⇄ R transition':'T state';
+ document.getElementById('st').firstChild.textContent=s;
+ document.getElementById('sts').textContent=n>=3?'Relaxed · high O₂ affinity':n===2?'Switching · affinity rising':'Tense · low O₂ affinity';
+ document.querySelectorAll('#sites button').forEach((b,i)=>{b.classList.toggle('on',bound[i]);b.setAttribute('aria-pressed',bound[i])});
+}
+const names=['α₁ heme','β₁ heme','α₂ heme','β₂ heme'];
+const sitesEl=document.getElementById('sites');
+names.forEach((nm,i)=>{const b=document.createElement('button');b.textContent=nm;b.onclick=()=>{bound[i]=!bound[i];update()};sitesEl.appendChild(b)});
+add.onclick=()=>{const i=bound.indexOf(false);if(i>=0){bound[i]=true;update()}};
+rem.onclick=()=>{const i=bound.lastIndexOf(true);if(i>=0){bound[i]=false;update()}};
+rot.onclick=()=>{ctl.autoRotate=!ctl.autoRotate;rot.classList.toggle('on',ctl.autoRotate)};
+rst.onclick=()=>{bound.fill(false);cam.position.set(0,6,30);ctl.target.set(0,0,0);update()};
+// labels
+const lb=document.getElementById('labels');
+const L=[];
+function mk(txt,cls,obj,off){const d=document.createElement('div');d.className='lbl '+cls;d.textContent=txt;lb.appendChild(d);L.push({d,obj,off:off||new THREE.Vector3()})}
+mk('α₁ subunit','a',{p:subs[0].p,g:dimerA},new THREE.Vector3(-1,5.5,0));
+mk('β₁ subunit','b',{p:subs[1].p,g:dimerA},new THREE.Vector3(-1,-5.5,0));
+mk('α₂ subunit','a',{p:subs[2].p,g:dimerB},new THREE.Vector3(1,-5.5,0));
+mk('β₂ subunit','b',{p:subs[3].p,g:dimerB},new THREE.Vector3(1,5.5,0));
+heme.forEach((h,i)=>{mk('Heme','h',{o:h},new THREE.Vector3(0,1.4,0));});
+fes.forEach((f,i)=>{mk('Fe²⁺','h',{o:f},new THREE.Vector3(.9,-.6,0))});
+o2s.forEach((o,i)=>{mk('O₂','o',{o:o},new THREE.Vector3(.9,.7,0))});
+const labCb=document.getElementById('lab');
+const tmp=new THREE.Vector3();
+function resize(){const w=stage.clientWidth,h=stage.clientHeight;renderer.setSize(w,h,false);cam.aspect=w/h;cam.updateProjectionMatrix()}
+addEventListener('resize',resize);resize();
+let running=true;document.addEventListener('visibilitychange',()=>{running=!document.hidden;if(running)loop()});
+const clock=new THREE.Clock();
+function loop(){
+ if(!running)return;requestAnimationFrame(loop);
+ const dt=Math.min(clock.getDelta(),.05),t=clock.elapsedTime;
+ R+=(Rt-R)*Math.min(1,dt*3);
+ // T->R: dimer rotation ~15deg & slight approach
+ dimerA.rotation.y=-R*.13;dimerB.rotation.y=R*.13;
+ dimerA.position.x=-R*.35;dimerB.position.x=R*.35;
+ cav.scale.setScalar(1-R*.35);
+ for(let i=0;i<4;i++){
+  const tg=bound[i]?1:0;cur[i]+=(tg-cur[i])*Math.min(1,dt*5);
+  fes[i].position.y=-.35+cur[i]*.35;// iron moves into plane
+  const o=o2s[i];o.visible=cur[i]>.02;
+  const sc=.01+cur[i]*.99;o.scale.setScalar(sc);
+  o.position.y=1.8-cur[i]*.7+(bound[i]?0:Math.sin(t*3+i)*.1);
+ }
+ ctl.update();
+ renderer.render(scene,cam);
+ const w=stage.clientWidth,h=stage.clientHeight;
+ L.forEach(l=>{
+  if(l.obj.o)l.obj.o.getWorldPosition(tmp);
+  else{tmp.copy(l.obj.p);l.obj.g.localToWorld(tmp)}
+  tmp.add(l.off);
+  const isO=l.d.classList.contains('o');
+  const vis=labCb.checked&&(!isO||l.obj.o.visible);
+  tmp.project(cam);
+  l.d.style.opacity=vis&&tmp.z<1?1:0;
+  l.d.style.left=((tmp.x+1)/2*w)+'px';l.d.style.top=((1-tmp.y)/2*h)+'px';
+ });
+}
+update();loop();
+</script>
+</body>
+</html>

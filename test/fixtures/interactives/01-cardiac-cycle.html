@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cardiac Cycle</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f3ece6; --panel:#fffaf5; --ink:#2b1a1a; --muted:#7a625f; --line:#dccbc2;
+  --blue:#3d6fb5; --red:#c4202c; --accent:#a3141f; --shadow:rgba(80,30,30,.18);
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#140d0f; --panel:#1f1519; --ink:#f2e4e0; --muted:#a58e8b; --line:#3a2a2e; --blue:#6f9ee0; --red:#ef4a55; --accent:#ff6b72; --shadow:rgba(0,0,0,.6);}
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:radial-gradient(ellipse at 30% 0%,var(--panel),var(--bg));color:var(--ink);font-family:'Figtree',sans-serif;display:flex;flex-direction:column;min-height:100vh}
+.wrap{display:grid;grid-template-columns:minmax(300px,1.15fr) minmax(280px,1fr);gap:14px;padding:14px;flex:1;max-width:1250px;margin:0 auto;width:100%}
+@media(max-width:820px){.wrap{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:0 6px 24px var(--shadow);padding:10px;position:relative}
+svg{width:100%;height:auto;display:block}
+.right{display:flex;flex-direction:column;gap:12px}
+.phase{animation:pop .5s both}
+@keyframes pop{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.phase h2{font-family:'Fraunces',serif;font-size:22px;margin:2px 0 4px;color:var(--accent)}
+.phase p{margin:4px 0;font-size:14px;line-height:1.45}
+.phase .why{border-left:3px solid var(--accent);padding-left:10px;color:var(--muted);font-size:13.5px}
+.valves{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+.v{display:flex;align-items:center;gap:8px;font-size:13px;padding:6px 8px;border-radius:8px;border:1px solid var(--line)}
+.dot{width:12px;height:12px;border-radius:50%;flex:none;transition:.3s}
+.open .dot{background:#2fa36b;box-shadow:0 0 8px #2fa36b}
+.closed .dot{background:var(--red);box-shadow:0 0 8px var(--red)}
+.v b{font-weight:600}
+.v span{margin-left:auto;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+.ctrl{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+button{font:inherit;font-weight:600;background:var(--accent);color:#fff;border:0;border-radius:10px;padding:8px 14px;cursor:pointer;box-shadow:0 2px 6px var(--shadow)}
+button.sec{background:transparent;color:var(--ink);border:1px solid var(--line);box-shadow:none}
+button:focus-visible,input:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
+.steps{display:flex;gap:6px;flex-wrap:wrap}
+.steps button{padding:6px 10px;font-size:12.5px;background:transparent;color:var(--ink);border:1px solid var(--line);box-shadow:none}
+.steps button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+label{font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px}
+input[type=range]{accent-color:var(--accent)}
+.legend{font-size:12px;color:var(--muted);display:flex;gap:12px;flex-wrap:wrap;padding:2px 6px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+ <div class="card">
+  <svg id="heart" viewBox="0 0 400 440" aria-label="Heart diagram showing four chambers and valves">
+   <defs>
+    <radialGradient id="gR" cx="35%" cy="30%" r="80%"><stop offset="0" stop-color="#7f9fd6"/><stop offset=".6" stop-color="#4a6fae"/><stop offset="1" stop-color="#2b4379"/></radialGradient>
+    <radialGradient id="gL" cx="65%" cy="30%" r="80%"><stop offset="0" stop-color="#ff7a74"/><stop offset=".55" stop-color="#cf2a30"/><stop offset="1" stop-color="#7d0f1a"/></radialGradient>
+    <linearGradient id="muscle" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#b8545a"/><stop offset=".5" stop-color="#8e2b35"/><stop offset="1" stop-color="#5e1520"/></linearGradient>
+    <radialGradient id="wall" cx="50%" cy="40%" r="70%"><stop offset="0" stop-color="#d97b78"/><stop offset="1" stop-color="#7a2230"/></radialGradient>
+    <linearGradient id="vessB" x1="0" x2="1"><stop offset="0" stop-color="#2f4f8f"/><stop offset=".5" stop-color="#6d90cf"/><stop offset="1" stop-color="#2f4f8f"/></linearGradient>
+    <linearGradient id="vessR" x1="0" x2="1"><stop offset="0" stop-color="#8a1018"/><stop offset=".5" stop-color="#e0464c"/><stop offset="1" stop-color="#8a1018"/></linearGradient>
+    <filter id="sh"><feDropShadow dx="0" dy="3" stdDeviation="4" flood-opacity=".4"/></filter>
+    <filter id="glow"><feGaussianBlur stdDeviation="2.5"/></filter>
+    <clipPath id="cRA"><path id="pRA" d="M60 150 Q50 110 85 100 L170 100 L170 200 L70 200 Q58 180 60 150Z"/></clipPath>
+    <clipPath id="cLA"><path id="pLA" d="M230 100 L315 100 Q352 110 342 150 Q342 180 330 200 L230 200Z"/></clipPath>
+    <clipPath id="cRV"><path id="pRV" d="M70 214 L170 214 L190 380 Q120 372 90 320 Q64 270 70 214Z"/></clipPath>
+    <clipPath id="cLV"><path id="pLV" d="M230 214 L330 214 Q344 280 316 330 Q285 376 210 382Z"/></clipPath>
+   </defs>
+   <!-- vessels -->
+   <g filter="url(#sh)">
+    <rect x="40" y="20" width="34" height="90" rx="14" fill="url(#vessB)"/>
+    <rect x="96" y="40" width="30" height="64" rx="12" fill="url(#vessB)"/>
+    <path d="M170 214 L170 150 Q172 60 150 40 Q146 14 176 18 L196 26 L196 70 L186 70 Q196 120 196 214Z" fill="url(#vessB)" opacity=".0"/>
+    <!-- pulmonary trunk -->
+    <path d="M150 106 L150 60 Q150 30 178 22 L190 62 Q176 70 176 100Z" fill="url(#vessB)"/>
+    <!-- aorta -->
+    <path d="M204 106 L204 50 Q204 12 250 14 Q300 18 300 60 L276 60 Q276 40 252 40 Q230 40 230 56 L230 106Z" fill="url(#vessR)"/>
+    <rect x="320" y="30" width="30" height="76" rx="12" fill="url(#vessR)"/>
+   </g>
+   <!-- muscle wall -->
+   <g filter="url(#sh)">
+    <path d="M52 150 Q40 100 85 92 L315 92 Q362 100 350 150 Q356 200 340 230 Q352 300 305 350 Q260 400 200 396 Q130 396 92 340 Q50 290 62 230 Q48 200 52 150Z" fill="url(#muscle)"/>
+    <path d="M56 160 Q40 120 70 100" stroke="#e08a8a" stroke-opacity=".35" stroke-width="3" fill="none"/>
+    <path d="M62 250 Q60 300 100 345" stroke="#e08a8a" stroke-opacity=".25" stroke-width="2.5" fill="none"/>
+   </g>
+   <!-- chamber cavities -->
+   <use href="#pRA" fill="url(#gR)" id="cavRA"/>
+   <use href="#pLA" fill="url(#gL)" id="cavLA"/>
+   <use href="#pRV" fill="url(#gR)" id="cavRV"/>
+   <use href="#pLV" fill="url(#gL)" id="cavLV"/>
+   <!-- septum -->
+   <path d="M170 98 L230 98 L230 214 L210 382 L190 380 L170 214Z" fill="url(#wall)" filter="url(#sh)"/>
+   <path d="M174 110 L176 330" stroke="#ffb3b0" stroke-opacity=".3" stroke-width="2"/>
+   <!-- particles layers clipped -->
+   <g clip-path="url(#cRA)"><g id="pRAg"></g></g>
+   <g clip-path="url(#cLA)"><g id="pLAg"></g></g>
+   <g clip-path="url(#cRV)"><g id="pRVg"></g></g>
+   <g clip-path="url(#cLV)"><g id="pLVg"></g></g>
+   <!-- inner shading to give depth -->
+   <g opacity=".35" style="mix-blend-mode:multiply" fill="none" stroke="#000" stroke-width="5" filter="url(#glow)">
+    <use href="#pRA"/><use href="#pLA"/><use href="#pRV"/><use href="#pLV"/>
+   </g>
+   <!-- papillary / chordae -->
+   <g stroke="#e8d9c8" stroke-width="1.1" opacity=".75" id="chordae"></g>
+   <ellipse cx="120" cy="352" rx="9" ry="14" fill="#8e2b35" stroke="#5e1520"/>
+   <ellipse cx="280" cy="356" rx="9" ry="14" fill="#8e2b35" stroke="#5e1520"/>
+   <!-- valves -->
+   <g id="valves" stroke-linecap="round" fill="none">
+    <g id="vTri"><path id="tL" stroke="#f0e6d0" stroke-width="5"/><path id="tR" stroke="#f0e6d0" stroke-width="5"/></g>
+    <g id="vMit"><path id="mL" stroke="#f0e6d0" stroke-width="5"/><path id="mR" stroke="#f0e6d0" stroke-width="5"/></g>
+    <g id="vPul"><path id="pL" stroke="#f0e6d0" stroke-width="5"/><path id="pR" stroke="#f0e6d0" stroke-width="5"/></g>
+    <g id="vAor"><path id="aL" stroke="#f0e6d0" stroke-width="5"/><path id="aR" stroke="#f0e6d0" stroke-width="5"/></g>
+   </g>
+   <!-- labels -->
+   <g font-family="Figtree" font-size="11" font-weight="600" fill="#fff" text-anchor="middle" style="paint-order:stroke" stroke="rgba(0,0,0,.45)" stroke-width="2.5">
+    <text x="115" y="160">Right Atrium</text>
+    <text x="285" y="160">Left Atrium</text>
+    <text x="120" y="290">Right Ventricle</text>
+    <text x="282" y="290">Left Ventricle</text>
+   </g>
+   <g font-family="Figtree" font-size="10" fill="currentColor" style="fill:var(--muted)" font-weight="600">
+    <text x="30" y="14">Vena cavae</text>
+    <text x="104" y="34">Pulm. trunk</text>
+    <text x="230" y="8" >Aorta</text>
+    <text x="318" y="24">Pulm. veins</text>
+    <text x="104" y="182" id="lt" opacity="0"></text>
+   </g>
+   <g font-family="Figtree" font-size="9.5" fill="#fff" font-weight="600" style="paint-order:stroke" stroke="rgba(0,0,0,.6)" stroke-width="2.5" text-anchor="middle">
+    <text x="120" y="206">Tricuspid</text>
+    <text x="280" y="206">Mitral</text>
+    <text x="160" y="118" text-anchor="end" opacity="0"></text>
+   </g>
+   <text x="216" y="408" font-size="10" text-anchor="middle" style="fill:var(--muted)" font-family="Figtree">Apex</text>
+  </svg>
+  <div class="legend"><span><i style="background:#4a6fae"></i>Deoxygenated</span><span><i style="background:#cf2a30"></i>Oxygenated</span><span><i style="background:#f0e6d0"></i>Valve leaflets</span></div>
+ </div>
+
+ <div class="right">
+  <div class="card">
+   <svg id="chart" viewBox="0 0 440 230" aria-label="Pressure chart of left heart">
+    <g font-family="Figtree" font-size="10" style="fill:var(--muted)">
+     <text x="6" y="12">Pressure (mmHg) — left heart</text>
+    </g>
+    <g id="bands"></g>
+    <g id="grid"></g>
+    <path id="cAo" fill="none" stroke="#d9363e" stroke-width="2.4"/>
+    <path id="cLVp" fill="none" stroke="#e08a1e" stroke-width="2.4"/>
+    <path id="cLAp" fill="none" stroke="#3d9ad1" stroke-width="2.4"/>
+    <line id="cursor" y1="22" y2="190" stroke-width="1.5" style="stroke:var(--ink)"/>
+    <circle id="cdot1" r="4" fill="#d9363e"/><circle id="cdot2" r="4" fill="#e08a1e"/><circle id="cdot3" r="4" fill="#3d9ad1"/>
+    <g font-family="Figtree" font-size="10" font-weight="600">
+     <text x="40" y="212" fill="#d9363e">● Aorta</text>
+     <text x="110" y="212" fill="#e08a1e">● Left ventricle</text>
+     <text x="215" y="212" fill="#3d9ad1">● Left atrium</text>
+     <text x="305" y="212" style="fill:var(--muted)" font-weight="500">click chart to jump</text>
+    </g>
+   </svg>
+  </div>
+  <div class="card phase" id="info" aria-live="polite"></div>
+  <div class="card">
+   <div class="ctrl">
+    <button id="play" aria-label="Play or pause">Pause</button>
+    <button class="sec" id="prev" aria-label="Previous phase">◀ Prev</button>
+    <button class="sec" id="next" aria-label="Next phase">Next ▶</button>
+    <label>Speed <input type="range" id="spd" min="0.25" max="2" step="0.25" value="0.75" aria-label="Speed"></label>
+   </div>
+   <div class="steps" id="steps" style="margin-top:10px"></div>
+  </div>
+ </div>
+</div>
+
+<script>
+(function(){
+const NS='http://www.w3.org/2000/svg';
+const $=id=>document.getElementById(id);
+// phases: t in [0,1) of cycle
+const PH=[
+ {n:'1. Ventricular filling',a:0,b:.35,tri:1,mit:1,pul:0,aor:0,
+  txt:'Blood returns to the atria and flows passively through the open AV valves into the relaxed ventricles. About 70–80% of ventricular filling happens now, before the atria even contract.',
+  why:'Ventricular pressure is lower than atrial pressure, so the AV valves are pushed open. Ventricular pressure is lower than arterial pressure, so the semilunar valves stay shut.'},
+ {n:'2. Atrial contraction',a:.35,b:.45,tri:1,mit:1,pul:0,aor:0,
+  txt:'The atria contract (the P wave on an ECG) and squeeze the last 20–30% of blood into the ventricles — the "atrial kick".',
+  why:'Atrial pressure briefly rises above ventricular pressure, keeping the AV valves open while the atria top off the ventricles.'},
+ {n:'3. Isovolumic contraction',a:.45,b:.52,tri:0,mit:0,pul:0,aor:0,
+  txt:'The ventricles begin to contract. Pressure inside rises sharply, but no blood leaves yet: ALL four valves are closed, so volume stays constant ("iso-volumic"). The "lub" heart sound is the AV valves snapping shut.',
+  why:'Ventricular pressure exceeds atrial pressure → AV valves slam shut (no backflow). But it is still below aortic/pulmonary pressure → semilunar valves remain closed.'},
+ {n:'4. Ventricular ejection',a:.52,b:.75,tri:0,mit:0,pul:1,aor:1,
+  txt:'Ventricular pressure climbs past arterial pressure and the semilunar valves open. The right ventricle sends blood to the lungs; the left ventricle sends it to the body. Atria refill meanwhile.',
+  why:'Left ventricular pressure (~120 mmHg) now exceeds aortic pressure, forcing the aortic valve open. The AV valves stay closed because ventricular pressure is far above atrial pressure.'},
+ {n:'5. Isovolumic relaxation',a:.75,b:.82,tri:0,mit:0,pul:0,aor:0,
+  txt:'The ventricles relax and pressure plunges. Blood in the arteries tries to flow backward and snaps the semilunar valves shut ("dub" sound). All four valves are closed again.',
+  why:'Ventricular pressure falls below arterial pressure → semilunar valves close, preventing backflow. It is still above atrial pressure → AV valves stay closed.'},
+ {n:'6. Filling begins again',a:.82,b:1,tri:1,mit:1,pul:0,aor:0,
+  txt:'Ventricular pressure drops below atrial pressure, the AV valves pop open, and blood that collected in the atria rushes into the ventricles. The cycle repeats.',
+  why:'Valves are passive: they open or close purely because of the pressure difference across them — never by muscle action of their own.'}
+];
+const LAB=['Filling','Atrial\u00a0systole','Iso-contraction','Ejection','Iso-relaxation','Filling'];
+// pressure curves (left heart), t 0..1
+function sm(x){x=Math.max(0,Math.min(1,x));return x*x*(3-2*x)}
+function pLA(t){let b=6+4*sm((t-.0)/.3)*(1-sm((t-.3)/.1));
+ let a=0; if(t>.35&&t<.5)a=5*Math.sin(Math.PI*(t-.35)/.15);
+ let v=0; if(t>.52&&t<.82)v=3*sm((t-.52)/.2); if(t>=.82)v=3-3*sm((t-.82)/.05)*0+0;
+ if(t>=.8) v=v*(1-sm((t-.8)/.04));
+ return 6+3*sm(t/.3)*(1-sm((t-.3)/.1))+a+v+ (t>.5&&t<.8?0:0)}
+function pLV(t){
+ if(t<.35) return 3+6*sm(t/.35);
+ if(t<.45) return 9+4*Math.sin(Math.PI*(t-.35)/.1)*.5+ (t-.35)*10;
+ if(t<.52) return 10+ 70*sm((t-.45)/.07);
+ if(t<.75){let u=(t-.52)/.23; return 80+42*Math.sin(Math.PI*Math.min(1,u*1.0)*.9)*(1-.0)+0*u}
+ if(t<.82) return 80*(1-sm((t-.75)/.07))+ 3*sm((t-.75)/.07);
+ return 3+ 2*sm((t-.82)/.18)}
+function pAo(t){
+ if(t<.52){let u=t/.52; return 80-14*sm(u)*1+ (t>.45?0:0)}
+ if(t<.75){let ve=pLV(t); return Math.max(66+ (ve-66)*.0+ 0, Math.min(ve,ve))*0+Math.max(ve-1,66+ (t-.52)*0)}
+ if(t<.78) return 118-6*(t-.75)/.03*1+ -0;
+ if(t<.82) return 110+3*Math.sin(Math.PI*(t-.78)/.04)-0;
+ return 108-28*sm((t-.82)/.18)-0}
+// make aorta continuous-ish: precompute smooth version
+function aoSmooth(t){
+ // aortic pressure: diastolic decay, rises during ejection with LV
+ if(t<.52) return 80-14*sm(t/.52)*0.0 - 14*(t/.52);
+ if(t<.75){let ve=pLV(t);return Math.max(66,ve-2)}
+ let u=(t-.75)/.25; return 118-52*(1-Math.exp(-3.2*u))/(1-Math.exp(-3.2))*0.0 - 52*u*0.0 + (-0) + 0 - 0 + 0 + (66-118)*0 + 0 + 0 + (118-(118-52*(1-Math.exp(-3*u))/(1-Math.exp(-3))))*0 - 52*(1-Math.exp(-3*u))/(1-Math.exp(-3)) + 0}
+function ao(t){
+ // clean implementation
+ if(t<.52) return 80-14*(t/.52);
+ if(t<.75) return Math.max(66,pLV(t)-1);
+ let u=(t-.75)/.25; let v=pLV(.75)-1; return v-(v-80)*0 - (v-66)*(1-Math.exp(-3*u))/(1-Math.exp(-3)) - 0 + 0 + (66-66)}
+function la(t){
+ let base=5+3*sm(t/.3)*(1-sm((t-.3)/.1));
+ let a=(t>.35&&t<.5)?5*Math.sin(Math.PI*(t-.35)/.15):0;
+ let v=(t>.52&&t<.82)?5*sm((t-.52)/.25):0;
+ if(t>=.82) v=5*(1-sm((t-.82)/.06));
+ if(t>=.5&&t<.52)v=0;
+ return base*.0+3+a+ (t<.35?5*sm(t/.25)*(1-sm((t-.3)/.1))+0:0) + v - (t>.8?0:0)}
+const W=440,X0=36,X1=430,Y0=26,Y1=190,PMAX=130;
+const px=t=>X0+(X1-X0)*t, py=p=>Y1-(Y1-Y0)*p/PMAX;
+// bands + grid
+const colors=['#3d9ad1','#9a6bd1','#e08a1e','#d9363e','#e08a1e','#3d9ad1'];
+let bh='';PH.forEach((p,i)=>{bh+=`<rect x="${px(p.a)}" y="${Y0}" width="${px(p.b)-px(p.a)}" height="${Y1-Y0}" fill="${colors[i]}" opacity=".13"/>`});
+$('bands').innerHTML=bh;
+let gh='';[0,40,80,120].forEach(v=>{gh+=`<line x1="${X0}" x2="${X1}" y1="${py(v)}" y2="${py(v)}" stroke="currentColor" stroke-opacity=".15"/><text x="${X0-4}" y="${py(v)+3}" text-anchor="end" font-size="9" font-family="Figtree" style="fill:var(--muted)">${v}</text>`});
+PH.forEach((p,i)=>{gh+=`<text x="${(px(p.a)+px(p.b))/2}" y="${Y1+12}" text-anchor="middle" font-size="${i==1||i==2||i==4?7.5:9}" font-family="Figtree" style="fill:var(--muted)">${i+1}</text>`});
+$('grid').innerHTML=gh;
+function path(f){let d='';for(let i=0;i<=200;i++){let t=i/200;d+=(i?'L':'M')+px(t).toFixed(1)+' '+py(f(t)).toFixed(1)}return d}
+$('cAo').setAttribute('d',path(ao));$('cLVp').setAttribute('d',path(pLV));$('cLAp').setAttribute('d',path(la));
+
+// steps
+const steps=$('steps');
+PH.forEach((p,i)=>{const b=document.createElement('button');b.textContent=LAB[i].replace('\u00a0',' ');b.setAttribute('aria-label','Go to phase '+(i+1));b.onclick=()=>{jump(i)};steps.appendChild(b)});
+
+// valves geometry. leaflet from hinge to tip; open => tips swing apart along flow
+function setLeaf(idL,idR,cx,cy,hw,len,open,dir){ // dir: 'down' flow from above(AV) or 'up'
+ const s=dir==='down'?1:-1;
+ // closed: leaflets meet at center, angled toward flow. open: leaflets lie along walls
+ const k=open; // 0..1
+ const hx=hw;
+ const tipClosedX=0, tipClosedY=s*len*.55;
+ const tipOpenX=hw*.95, tipOpenY=s*len*1.15;
+ const tx=tipClosedX+(tipOpenX-tipClosedX)*k, ty=tipClosedY+(tipOpenY-tipClosedY)*k;
+ $(idL).setAttribute('d',`M${cx-hx} ${cy} L${cx-tx*1} ${cy+ty}`.replace(/L(\S+) /,(m,a)=>`L${(cx-hx)+(cx-tx*1-(cx-hx))*(0)+0} `));
+ // simple explicit: left leaflet from hinge(cx-hx,cy) to tip(cx-tx, cy+ty)
+ $(idL).setAttribute('d',`M${cx-hx} ${cy} L${cx-(hx-(hx-0)*(1-k)*1)*0-(1-k)*1*0-(tipOpenX*k)} ${cy+ty}`);
+ $(idR).setAttribute('d',`M${cx+hx} ${cy} L${cx+(tipOpenX*k)} ${cy+ty}`);
+}
+// state: smooth valve openness
+const V={tri:0,mit:0,pul:0,aor:0};
+function drawValves(){
+ // AV valves: hinge at annulus y=207, hw 34
+ setLeaf('tL','tR',120,207,34,34,V.tri,'down');
+ setLeaf('mL','mR',280,207,34,34,V.mit,'down');
+ // semilunar: hinge at base of vessels y=104, pointing up
+ setLeaf('pL','pR',163,106,13,16,V.pul,'up');
+ setLeaf('aL','aR',217,106,13,16,V.aor,'up');
+ // chordae
+ let c='';
+ [[120,V.tri],[280,V.mit]].forEach(([cx,o],i)=>{const py_=cx<200?352:356,pxx=cx<200?120:280;
+  [-1,1].forEach(s=>{const hx=cx+s*(34-0),tip=cx+s*(34*(o)*.95);
+   c+=`<path d="M${tip} ${207+34*(.55+.6*o)} Q${(tip+pxx)/2} ${(207+py_)/2} ${pxx+s*3} ${py_-12}"/>`})});
+ $('chordae').innerHTML=c;
+}
+// cavity sizes via transform scale about centers
+const cav={RA:{c:[115,155],s:1},LA:{c:[285,155],s:1},RV:{c:[125,300],s:1},LV:{c:[275,300],s:1}};
+const idMap={RA:'cavRA',LA:'cavLA',RV:'cavRV',LV:'cavLV'};
+const gMap={RA:'pRAg',LA:'pLAg',RV:'pRVg',LV:'pLVg'};
+function volumes(t){ // 0..1 chamber fullness
+ const ven= t<.35? .45+.4*sm(t/.35) : t<.45? .85+.15*sm((t-.35)/.1) : t<.52? 1 : t<.75? 1-.55*sm((t-.52)/.12)*(1) : .45;
+ const vent= t>=.75&&t<.82? .45 : t>=.82? .45+ .4*sm((t-.82)/.18)*.0 : ven;
+ let V1=ven; if(t>=.75) V1=.45+(t>=.82?0.4*sm((t-.82)/.18)*0.9:0);
+ let at;
+ if(t<.35) at=.9-.35*sm((t-.1)/.25);
+ else if(t<.45) at=.55-.2*Math.sin(Math.PI*(t-.35)/.1)+0;
+ else if(t<.75) at=.55+.4*sm((t-.45)/.3);
+ else if(t<.82) at=.95;
+ else at=.95-.4*sm((t-.82)/.18);
+ if(t>=.35&&t<.5){at=.8-.35*sm((t-.35)/.1)} if(t>=.5&&t<.75){at=.45+.5*sm((t-.5)/.25)}
+ return {V:V1,A:at};
+}
+function applyScale(){}
+// particles
+const parts=[];
+function mk(g,col){const c=document.createElementNS(NS,'circle');c.setAttribute('r',3.2);c.setAttribute('fill',col);c.setAttribute('opacity','.85');$(g).appendChild(c);return c}
+function spawn(ch,n,col){for(let i=0;i<n;i++)parts.push({ch,el:mk(gMap[ch],col),x:0,y:0,vx:0,vy:0,mode:'idle',ph:Math.random()*6,tx:0,ty:0})}
+spawn('RA',9,'#9db6e6');spawn('LA',9,'#ff9a93');spawn('RV',12,'#9db6e6');spawn('LV',12,'#ff9a93');
+const home={RA:{x:[70,165],y:[110,195]},LA:{x:[235,335],y:[110,195]},RV:{x:[85,165],y:[225,360]},LV:{x:[235,320],y:[225,365]}};
+parts.forEach((p,i)=>{const h=home[p.ch];p.hx=h.x[0]+Math.random()*(h.x[1]-h.x[0]);p.hy=h.y[0]+Math.random()*(h.y[1]-h.y[0]);p.x=p.hx;p.y=p.hy});
+// flow streams
+const flows=[];
+function mkFlow(col,path){return {col,path,items:[]}}
+const flowG=document.createElementNS(NS,'g');$('heart').insertBefore(flowG,$('chordae'));
+const STR=[
+ {id:'rIn',col:'#9db6e6',pts:[[57,30],[57,100],[90,150]],act:t=>1},
+ {id:'lIn',col:'#ff9a93',pts:[[335,30],[335,100],[300,150]],act:t=>1},
+ {id:'triF',col:'#9db6e6',pts:[[115,150],[118,210],[125,280]],act:(t,ph)=>PH[ph].tri},
+ {id:'mitF',col:'#ff9a93',pts:[[285,150],[282,210],[275,280]],act:(t,ph)=>PH[ph].mit},
+ {id:'pulF',col:'#9db6e6',pts:[[135,280],[160,200],[163,100],[163,50],[135,20]],act:(t,ph)=>PH[ph].pul},
+ {id:'aoF',col:'#ff9a93',pts:[[265,280],[220,200],[217,100],[217,48],[250,26],[285,40]],act:(t,ph)=>PH[ph].aor}
+];
+STR.forEach(s=>{s.dots=[];for(let i=0;i<7;i++){const c=document.createElementNS(NS,'circle');c.setAttribute('r',3.4);c.setAttribute('fill',s.col);c.setAttribute('stroke','#fff');c.setAttribute('stroke-opacity','.5');c.setAttribute('stroke-width','.8');flowG.appendChild(c);s.dots.push({u:i/7,el:c})}
+ // length
+ s.len=[];let L=0;for(let i=1;i<s.pts.length;i++){const d=Math.hypot(s.pts[i][0]-s.pts[i-1][0],s.pts[i][1]-s.pts[i-1][1]);s.len.push(d);L+=d}s.L=L});
+function atPath(s,u){let d=u*s.L;for(let i=0;i<s.len.length;i++){if(d<=s.len[i]){const f=d/s.len[i];return[s.pts[i][0]+(s.pts[i+1][0]-s.pts[i][0])*f,s.pts[i][1]+(s.pts[i+1][1]-s.pts[i][1])*f]}d-=s.len[i]}return s.pts[s.pts.length-1]}
+
+// state
+let t=0,playing=true,last=performance.now(),cur=-1,speed=.75;
+const CYC=6; // seconds per cycle at speed 1 => slower
+function phaseAt(t){for(let i=0;i<PH.length;i++)if(t>=PH[i].a&&t<PH[i].b)return i;return 5}
+function setInfo(i){
+ const p=PH[i];
+ const st=(o)=>o?'open':'closed';
+ const row=(nm,o)=>`<div class="v ${st(o)}"><i class="dot"></i><b>${nm}</b><span>${o?'Open':'Closed'}</span></div>`;
+ $('info').style.animation='none';void $('info').offsetWidth;$('info').style.animation='';
+ $('info').innerHTML=`<h2>${p.n}</h2><p>${p.txt}</p><p class="why"><b>Why?</b> ${p.why}</p>
+ <div class="valves">${row('Tricuspid (R AV)',p.tri)}${row('Mitral (L AV)',p.mit)}${row('Pulmonary (R SL)',p.pul)}${row('Aortic (L SL)',p.aor)}</div>`;
+ [...steps.children].forEach((b,j)=>b.classList.toggle('on',j===i));
+}
+function jump(i){t=(PH[i].a+PH[i].b)/2*.0+PH[i].a+.002;playing=false;$('play').textContent='Play';update(0)}
+$('play').onclick=()=>{playing=!playing;$('play').textContent=playing?'Pause':'Play'};
+$('next').onclick=()=>{jump((phaseAt(t)+1)%6)};
+$('prev').onclick=()=>{jump((phaseAt(t)+5)%6)};
+$('spd').oninput=e=>{speed=+e.target.value};
+$('chart').addEventListener('click',e=>{const r=$('chart').getBoundingClientRect();const x=(e.clientX-r.left)/r.width*W;t=Math.max(0,Math.min(.999,(x-X0)/(X1-X0)));playing=false;$('play').textContent='Play';update(0)});
+
+function scaleOf(id,s,cx,cy){$(id).setAttribute('transform',`translate(${cx} ${cy}) scale(${s}) translate(${-cx} ${-cy})`)}
+function update(dt){
+ const ph=phaseAt(t);
+ if(ph!==cur){cur=ph;setInfo(ph)}
+ const p=PH[ph];
+ // valves ease
+ const k=Math.min(1,dt*10+ (dt===0?1:0));
+ V.tri+=(p.tri-V.tri)*k;V.mit+=(p.mit-V.mit)*k;V.pul+=(p.pul-V.pul)*k;V.aor+=(p.aor-V.aor)*k;
+ drawValves();
+ // volumes
+ let vv,aa;
+ // ventricle fullness
+ if(t<.35) vv=.45+.4*sm(t/.35); else if(t<.45) vv=.85+.15*sm((t-.35)/.1); else if(t<.52) vv=1; else if(t<.75) vv=1-.55*sm((t-.52)/.1); else vv=.45;
+ if(t>=.82) vv=.45+.4*sm((t-.82)/.18)*.0+ .4*sm((t-.82)/.18)*(0)+ 0; // reset: early filling
+ if(t>=.82) vv=.45+.15*sm((t-.82)/.18);
+ // atrial fullness
+ if(t<.35) aa=.8-.15*sm((t-.0)/.35); else if(t<.5) aa=.65-.35*sm((t-.35)/.1); else if(t<.75) aa=.3+.65*sm((t-.5)/.25); else aa=.95-.1*sm((t-.75)/.25);
+ if(t>=.82) aa=.95-.45*sm((t-.82)/.12);
+ const sv=.8+.25*vv, sa=.82+.2*aa;
+ scaleOf('cavRV',sv,120,214);scaleOf('cavLV',sv,280,214);
+ scaleOf('cavRA',sa,115,150);scaleOf('cavLA',sa,285,150);
+ // ventricle wall squeeze glow
+ // cursor
+ const cx=px(t);$('cursor').setAttribute('x1',cx);$('cursor').setAttribute('x2',cx);
+ [['cdot1',ao],['cdot2',pLV],['cdot3',la]].forEach(([id,f])=>{$(id).setAttribute('cx',cx);$(id).setAttribute('cy',py(f(t)))});
+ // flow dots
+ STR.forEach(s=>{
+  const a=s.act(t,ph);
+  s.dots.forEach(d=>{
+   if(a>0.5){d.u=(d.u+dt*.45*(1+ (s.id==='pulF'||s.id==='aoF'?.8:0)))%1}
+   const [x,y]=atPath(s,d.u);d.el.setAttribute('cx',x);d.el.setAttribute('cy',y);
+   let op=a>.5?1:0;
+   if(s.id==='triF'||s.id==='mitF'){op=a>.5?(ph===1?1:.9):0}
+   d.el.setAttribute('opacity',op*(Math.sin(Math.PI*d.u)*.8+.2));
+  });
+ });
+ // chamber particle jitter
+ const T=performance.now()/1000;
+ parts.forEach(q=>{
+  const sc=(q.ch==='RV'||q.ch==='LV')?sv:sa;
+  q.el.setAttribute('cx',q.hx+Math.sin(T*1.3+q.ph)*5);q.el.setAttribute('cy',q.hy+Math.cos(T*1.1+q.ph*1.7)*5);
+  const full=(q.ch==='RV'||q.ch==='LV')?vv:aa;
+  q.el.setAttribute('opacity',Math.min(.9,.2+full));
+ });
+ // chamber tint pulse
+ const sys=(ph===2||ph===3);
+ ['cavRV','cavLV'].forEach(id=>$(id).style.filter=sys?'brightness(1.12) saturate(1.1)':'none');
+ ['cavRA','cavLA'].forEach(id=>$(id).style.filter=ph===1?'brightness(1.12)':'none');
+}
+function frame(now){
+ const dt=Math.min(.05,(now-last)/1000);last=now;
+ if(playing&&!document.hidden){
+  // slow down brief phases less: constant rate
+  t+=dt*speed/ (CYC/ (1)) ;
+  if(t>=1)t-=1;
+ }
+ update(playing?dt:0.016);
+ requestAnimationFrame(frame);
+}
+document.addEventListener('visibilitychange',()=>{last=performance.now()});
+setInfo(0);cur=0;
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

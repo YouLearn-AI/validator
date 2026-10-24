@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mitosis vs Meiosis</title>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Figtree:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f3ece2; --panel:#fbf7f0; --ink:#2b2220; --muted:#7a6a62; --line:#d9cdbd;
+  --mit:#1f7a6d; --mei:#b3412f; --c1:#c0392b; --c2:#2c5f9e; --accent:#e0a526;
+  --cellA:#f6dfd0; --cellB:#e9b9a3;
+}
+@media (prefers-color-scheme:dark){
+  :root{ --bg:#14181d; --panel:#1c2229; --ink:#ece6dc; --muted:#98a1aa; --line:#2f3841;
+  --mit:#47c2b0; --mei:#f08a73; --c1:#e5574a; --c2:#5b9be0; --accent:#f0b93a;
+  --cellA:#3b3340; --cellB:#2a2430;}
+}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:'Figtree',sans-serif;min-height:100vh;
+  background-image:radial-gradient(circle at 20% 0%,rgba(224,165,38,.08),transparent 50%),radial-gradient(circle at 90% 100%,rgba(179,65,47,.07),transparent 50%);}
+.wrap{max-width:1200px;margin:0 auto;padding:14px}
+.controls{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 14px;box-shadow:0 6px 18px rgba(0,0,0,.08)}
+button{font:600 14px 'Figtree';cursor:pointer;border:1px solid var(--line);background:var(--bg);color:var(--ink);padding:8px 14px;border-radius:9px;transition:.15s}
+button:hover{transform:translateY(-1px);border-color:var(--accent)}
+button:focus-visible{outline:3px solid var(--accent)}
+button.primary{background:var(--ink);color:var(--bg)}
+.dots{display:flex;gap:6px;flex:1;justify-content:center;flex-wrap:wrap}
+.dot{width:auto;padding:6px 10px;font-size:12px;border-radius:20px}
+.dot.on{background:var(--accent);color:#1a1205;border-color:var(--accent)}
+.stagebar{margin:12px 0 4px;font:700 22px 'Fraunces',serif;text-align:center;letter-spacing:.2px}
+.sub{text-align:center;color:var(--muted);font-size:14px;margin-bottom:10px;min-height:20px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:800px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:12px;box-shadow:0 10px 24px rgba(0,0,0,.1);position:relative;overflow:hidden}
+.card h2{font:700 20px 'Fraunces',serif;display:flex;justify-content:space-between;align-items:baseline}
+.card.mit h2{color:var(--mit)} .card.mei h2{color:var(--mei)}
+.card h2 small{font:500 12px 'Figtree';color:var(--muted)}
+canvas{width:100%;height:auto;display:block;border-radius:12px;aspect-ratio:1/0.8}
+.stats{display:flex;gap:8px;margin:8px 0;flex-wrap:wrap}
+.chip{flex:1;min-width:90px;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:6px 10px;font-size:12px;color:var(--muted)}
+.chip b{display:block;font:700 18px 'Fraunces',serif;color:var(--ink)}
+.note{font-size:13.5px;line-height:1.45;min-height:84px;padding:8px 10px;border-left:4px solid var(--accent);background:var(--bg);border-radius:0 8px 8px 0}
+.mit .note{border-color:var(--mit)} .mei .note{border-color:var(--mei)}
+.key{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin-top:12px;font-size:13px;color:var(--muted);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px}
+.key span{display:flex;align-items:center;gap:6px}
+.sw{width:14px;height:14px;border-radius:4px;display:inline-block}
+.flag{position:absolute;top:44px;right:12px;background:var(--accent);color:#1a1205;font-weight:700;font-size:12px;padding:4px 10px;border-radius:20px;opacity:0;transform:scale(.8);transition:.3s;z-index:2}
+.flag.show{opacity:1;transform:scale(1)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="controls">
+    <button id="prev" aria-label="Previous stage">◀ Back</button>
+    <button id="play" class="primary" aria-label="Play or pause">▶ Play</button>
+    <button id="next" aria-label="Next stage">Next ▶</button>
+    <div class="dots" id="dots"></div>
+  </div>
+  <div class="stagebar" id="stageTitle"></div>
+  <div class="sub" id="stageSub"></div>
+  <div class="grid">
+    <div class="card mit">
+      <h2>Mitosis <small>1 division · 2 cells</small></h2>
+      <div class="flag" id="fm"></div>
+      <canvas id="cm" width="560" height="448" aria-label="Mitosis animation"></canvas>
+      <div class="stats"><div class="chip">Chromosomes per cell<b id="mN">2n = 4</b></div><div class="chip">DNA copies<b id="mD">1×</b></div><div class="chip">Ploidy<b id="mP">Diploid</b></div></div>
+      <div class="note" id="mNote"></div>
+    </div>
+    <div class="card mei">
+      <h2>Meiosis <small>2 divisions · 4 cells</small></h2>
+      <div class="flag" id="fi"></div>
+      <canvas id="ci" width="560" height="448" aria-label="Meiosis animation"></canvas>
+      <div class="stats"><div class="chip">Chromosomes per cell<b id="iN">2n = 4</b></div><div class="chip">DNA copies<b id="iD">1×</b></div><div class="chip">Ploidy<b id="iP">Diploid</b></div></div>
+      <div class="note" id="iNote"></div>
+    </div>
+  </div>
+  <div class="key">
+    <span><i class="sw" style="background:var(--c1)"></i>Maternal chromosome</span>
+    <span><i class="sw" style="background:var(--c2)"></i>Paternal chromosome</span>
+    <span>Long pair = homologs of chromosome A · Short pair = homologs of chromosome B</span>
+    <span>X-shape = replicated (2 sister chromatids) · I-shape = unreplicated</span>
+  </div>
+</div>
+
+<script>
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const STAGES=[
+ {t:"Start: Diploid Cell (2n = 4)",s:"Two homologous pairs: 4 chromosomes. One from each parent per pair.",
+  m:"The parent cell is diploid: 4 chromosomes arranged as 2 homologous pairs (maternal red, paternal blue).",
+  i:"Same starting cell. Diploid means two sets of chromosomes, one from each parent. Here 2n = 4."},
+ {t:"Interphase: DNA Replication (S phase)",s:"DNA replicates ONCE in both processes.",
+  m:"Each chromosome copies itself into 2 sister chromatids joined at the centromere. Still 4 chromosomes (now X-shaped).",
+  i:"Identical: DNA replicates once, before meiosis I. Still 4 chromosomes, each with 2 sister chromatids. There is no replication before meiosis II."},
+ {t:"Prophase / Prophase I",s:"Meiosis alone pairs homologs and crosses over.",
+  m:"Chromosomes condense but stay independent. Homologs do NOT pair up, and crossing over is not typical.",
+  i:"Homologs pair up (synapsis) and CROSSING OVER swaps segments between non-sister chromatids, creating new allele combinations."},
+ {t:"Metaphase / Metaphase I",s:"Different lineups at the cell's equator.",
+  m:"All 4 chromosomes line up single file. Each has 2 chromatids ready to split.",
+  i:"Homologous PAIRS line up together (2 pairs side by side), oriented at random: independent assortment."},
+ {t:"Anaphase / Anaphase I",s:"Sister chromatids split in mitosis; homologs split in meiosis I.",
+  m:"Sister chromatids separate: 8 single chromosomes, 4 moving to each pole.",
+  i:"HOMOLOGS separate; sister chromatids stay together. This is where the chromosome number is halved (4 → 2 per side)."},
+ {t:"Telophase / Cytokinesis (end of 1st division)",s:"Mitosis finishes; meiosis has only finished half its work.",
+  m:"Two diploid daughter cells (2n = 4), each with 4 single chromosomes, genetically identical to the parent. Done!",
+  i:"Two HAPLOID cells (n = 2), each with 2 chromosomes still made of 2 chromatids. Different from each other due to crossing over."},
+ {t:"Meiosis II: Sister Chromatids Separate",s:"No DNA replication between the divisions.",
+  m:"Mitosis has no second division. Final result: 2 diploid cells.",
+  i:"Each haploid cell divides again, splitting sister chromatids (like mitosis). No new replication."},
+ {t:"Final Products",s:"2 identical diploid cells vs 4 unique haploid cells.",
+  m:"2 cells · 2n = 4 · genetically identical. Used for growth and repair.",
+  i:"4 cells · n = 2 · each genetically unique. These become gametes (sperm or egg). Fertilization restores 2n."}
+];
+const N=STAGES.length;
+let stage=0,playing=false,timer=null;
+let curT=0; // animated stage value
+let tgt=0;
+
+// chromosome geometry
+function lerp(a,b,t){return a+(b-a)*t}
+function ease(t){return t<.5?2*t*t:1-Math.pow(-2*t+2,2)/2}
+function clamp(x){return Math.max(0,Math.min(1,x))}
+
+function drawChromatid(c,x,y,len,ang,col,w){
+  c.save();c.translate(x,y);c.rotate(ang);
+  const g=c.createLinearGradient(-w,0,w,0);
+  g.addColorStop(0,shade(col,-35));g.addColorStop(.35,shade(col,35));g.addColorStop(.7,col);g.addColorStop(1,shade(col,-45));
+  c.fillStyle=g;c.shadowColor="rgba(0,0,0,.35)";c.shadowBlur=4;c.shadowOffsetY=2;
+  rr(c,-w/2,-len/2,w,len,w/2);c.fill();
+  c.shadowColor="transparent";
+  c.strokeStyle="rgba(255,255,255,.18)";c.lineWidth=1;
+  for(let k=-len/2+5;k<len/2-3;k+=5){c.beginPath();c.moveTo(-w/2+1,k);c.lineTo(w/2-1,k+2);c.stroke();}
+  c.restore();
+}
+function rr(c,x,y,w,h,r){c.beginPath();c.moveTo(x+r,y);c.arcTo(x+w,y,x+w,y+h,r);c.arcTo(x+w,y+h,x,y+h,r);c.arcTo(x,y+h,x,y,r);c.arcTo(x,y,x+w,y,r);c.closePath();}
+function shade(hex,p){
+  let h=hex.replace('#','');if(h.length==3)h=h.split('').map(c=>c+c).join('');
+  const n=parseInt(h,16);let r=n>>16,g=n>>8&255,b=n&255;
+  const f=v=>Math.max(0,Math.min(255,Math.round(v+p)));
+  return `rgb(${f(r)},${f(g)},${f(b)})`;
+}
+// chromosome: replicated -> two chromatids with spread; swap marks segment swap
+function drawChrom(c,x,y,len,ang,col,rep,spread,swapCol){
+  const w=9;
+  if(!rep){
+    drawChromatid(c,x,y,len,ang,col,w);
+    if(swapCol){segment(c,x,y,len,ang,0,swapCol,w)}
+    return;
+  }
+  const dx=Math.cos(ang)*spread,dy=Math.sin(ang)*spread;
+  const ox=-Math.sin(ang)*0,oy=0;
+  const px=Math.cos(ang),py=Math.sin(ang);
+  // chromatids offset perpendicular to length axis (ang is rotation of long axis from vertical)
+  const nx=Math.cos(ang)*spread,ny=Math.sin(ang)*spread;
+  drawChromatid(c,x-nx,y-ny,len,ang,col,w);
+  drawChromatid(c,x+nx,y+ny,len,ang,swapCol&&swapCol.which==1?col:col,w);
+  if(swapCol){segment(c,x+nx,y+ny,len,ang,1,swapCol.col,w)}
+  // centromere
+  c.save();c.translate(x,y);c.rotate(ang);
+  c.fillStyle="rgba(30,20,20,.75)";c.beginPath();c.ellipse(0,0,w*.9+spread,3.2,0,0,7);c.fill();c.restore();
+}
+function segment(c,x,y,len,ang,i,col,w){
+  c.save();c.translate(x,y);c.rotate(ang);
+  const g=c.createLinearGradient(-w,0,w,0);
+  g.addColorStop(0,shade(col,-35));g.addColorStop(.35,shade(col,35));g.addColorStop(.7,col);g.addColorStop(1,shade(col,-45));
+  c.fillStyle=g;rr(c,-w/2,-len/2,w,len*.28,w/2);c.fill();c.restore();
+}
+
+function cellBody(c,cx,cy,rx,ry,alpha){
+  c.save();c.globalAlpha=alpha;
+  const g=c.createRadialGradient(cx-rx*.3,cy-ry*.35,rx*.1,cx,cy,rx*1.1);
+  g.addColorStop(0,css('--cellA'));g.addColorStop(1,css('--cellB'));
+  c.fillStyle=g;c.shadowColor="rgba(0,0,0,.35)";c.shadowBlur=18;c.shadowOffsetY=6;
+  c.beginPath();c.ellipse(cx,cy,rx,ry,0,0,7);c.fill();c.shadowColor="transparent";
+  c.lineWidth=3;c.strokeStyle="rgba(255,255,255,.35)";c.stroke();
+  c.lineWidth=1.5;c.strokeStyle="rgba(0,0,0,.25)";c.beginPath();c.ellipse(cx,cy,rx-3,ry-3,0,0,7);c.stroke();
+  c.restore();
+}
+function nucleus(c,cx,cy,r,alpha){
+  c.save();c.globalAlpha=alpha;
+  const g=c.createRadialGradient(cx-r*.3,cy-r*.3,2,cx,cy,r);
+  g.addColorStop(0,"rgba(255,255,255,.28)");g.addColorStop(1,"rgba(80,60,100,.25)");
+  c.fillStyle=g;c.strokeStyle="rgba(255,255,255,.4)";c.lineWidth=2;
+  c.beginPath();c.arc(cx,cy,r,0,7);c.fill();c.stroke();c.restore();
+}
+function spindle(c,cx,cy,len,alpha){
+  c.save();c.globalAlpha=alpha*.5;c.strokeStyle=css('--muted');c.lineWidth=1;
+  for(let i=-5;i<=5;i++){c.beginPath();c.moveTo(cx,cy-len);c.quadraticCurveTo(cx+i*14,cy,cx,cy+len);c.stroke();}
+  c.fillStyle=css('--ink');c.globalAlpha=alpha;
+  c.beginPath();c.arc(cx,cy-len,3.5,0,7);c.fill();c.beginPath();c.arc(cx,cy+len,3.5,0,7);c.fill();c.restore();
+}
+
+// chromosome definitions: A (long) maternal/paternal, B (short)
+function COL(){return{m:css('--c1'),p:css('--c2')}}
+
+// ---------- MITOSIS SCENE ----------
+function sceneMitosis(c,W,H,T){
+  const col=COL();c.clearRect(0,0,W,H);
+  const cx=W/2,cy=H/2;
+  const phase=Math.floor(T),f=T-phase;
+  const lA=70,lB=44;
+  // chromosome slots: [type, color]
+  const ch=[{L:lA,c:col.m},{L:lA,c:col.p},{L:lB,c:col.m},{L:lB,c:col.p}];
+  const rep=T>=1.5;
+  const spread=rep?clamp(T-1)*4+1:0;
+  const repAmt=T<1?0:clamp((T-1)/0.6);
+  // stage 0..1: nothing; 1: replication; 2 prophase; 3 metaphase; 4 anaphase; 5+ telophase/final
+  if(T<4.6){
+    cellBody(c,cx,cy,175,150,1);
+    const nuc=T<2?clamp(1-(T-1.4)*1.5):0;
+    nucleus(c,cx,cy,95,T<2.2?Math.max(0,1-Math.max(0,T-1.6)*1.7):0);
+    if(T>=2.5)spindle(c,cx,cy,125,clamp(T-2.5));
+    ch.forEach((k,i)=>{
+      let x,y,ang=0;
+      const scatter=[[-45,-30],[40,-35],[-30,38],[45,30]][i];
+      const meta=[[-48,0],[-16,0],[16,0],[48,0]][i];
+      let mt=clamp(T-2.5);
+      if(T<3){x=scatter[0]*(T<2?.9:1);y=scatter[1];ang=(i*.5)-.5; if(T>=2.5){x=lerp(scatter[0],meta[0],ease(mt*2));y=lerp(scatter[1],meta[1],ease(mt*2));ang=lerp(ang,0,ease(mt*2));}}
+      else{x=meta[0];y=meta[1];ang=0;}
+      if(T>=3.9){ // anaphase: split handled below
+      }
+      if(T>=3.9)return;
+      const ldraw=T<2?k.L*.75:k.L;
+      drawChrom(c,cx+x,cy+y,ldraw,ang,k.c,T>=1,spread);
+    });
+    if(T>=3.9){
+      const a=ease(clamp((T-3.9)/0.7));
+      const meta=[-48,-16,16,48];
+      ch.forEach((k,i)=>{
+        for(const dir of[-1,1]){
+          const x=meta[i],y=dir*lerp(2,k.L*.0+78+(i%2)*6,a);
+          const ang=lerp(0,0,a);
+          // chromatids move up/down; shape as rotated V
+          drawChromatid(c,cx+x*lerp(1,.8,a),cy+y*lerp(1,1,a)-dir*(-(1-a))*0,k.L*.8,0,k.c,9);
+        }
+      });
+      spindle(c,cx,cy,125,1-a*.3);
+    }
+  } else {
+    // telophase to final: 2 cells
+    const a=ease(clamp((T-4.6)/0.8));
+    const sep=lerp(0,95,a);
+    const rx=lerp(175,120,a),ry=lerp(150,115,a);
+    for(const d of[-1,1]){
+      cellBody(c,cx,cy+d*sep,rx,lerp(150,95,a),1);
+      nucleus(c,cx,cy+d*sep,lerp(30,70,a),clamp(a*1.5));
+      ch.forEach((k,i)=>{
+        const meta=[[-28,-14],[10,-20],[-12,18],[24,12]][i];
+        const px=lerp([-48,-16,16,48][i]*.8,meta[0],a);
+        const py=lerp(d*78,meta[1]+0,a);
+        drawChromatid(c,cx+px,cy+d*sep+lerp(0,meta[1],a)*(1)+lerp(78*d-d*sep,0,a)*1*0,k.L*lerp(.8,.62,a),i*.4*a-.4*a,k.c,9);
+      });
+    }
+  }
+  // labels
+  c.fillStyle=css('--muted');c.font="12px Figtree";c.textAlign="center";
+  return;
+}
+
+// ---------- MEIOSIS SCENE ----------
+function sceneMeiosis(c,W,H,T){
+  const col=COL();c.clearRect(0,0,W,H);
+  const cx=W/2,cy=H/2;
+  const lA=70,lB=44;
+  const rep=T>=1;
+  const spread=rep?clamp(T-1)*4+1:0;
+  const swap=T>=2.6&&T<3.1?null:null;
+  // after crossing over, chromatids carry swapped segment color
+  const crossed=T>=2.4;
+  const orient=[0,1]; // fixed
+  // chromosome list with metaphase I positions: pair A (x=-30,+30 at row -35), pair B (row +35)
+  if(T<5.0){
+    cellBody(c,cx,cy,175,150,1);
+    if(T<2.2)nucleus(c,cx,cy,95,T<2?1:Math.max(0,1-(T-2)*5));
+    if(T>=3.3)spindle(c,cx,cy,125,clamp(T-3.3));
+    const defs=[
+      {L:lA,c:col.m,s:[-50,-34],pair:[-70,-34]},
+      {L:lA,c:col.p,s:[48,-30],pair:[70,-30]},
+      {L:lB,c:col.m,s:[-38,36],pair:[-70,36]},
+      {L:lB,c:col.p,s:[44,34],pair:[70,34]}];
+    // positions by stage
+    defs.forEach((d,i)=>{
+      let x,y;
+      const scatter=d.s;
+      // prophase I pairing positions (side by side, near each other)
+      const pairX=[-14,14,-14,14][i],pairY=[-40,-40,38,38][i];
+      // metaphase I: pairs at equator (vertical column at center, horizontal row?) pairs stacked at x=0 line, homologs left/right
+      const metaX=[-16,16,-16,16][i];
+      const metaY=[-48,-48,48,48][i];
+      // anaphase I: homologs go to poles (maternal up/blue down, per pair chosen)
+      const poleY=[-92,92,-92,92][i];
+      // random orientation: pair B reversed
+      const poleYb=[-92,92,92,-92][i];
+      const pY=i<2?poleY:poleYb;
+      const pole=[ -12,12,-12,12][i];
+      if(T<2){ x=scatter[0];y=scatter[1];
+        if(T>=1.6){const t=ease(clamp((T-1.6)/.4));x=lerp(scatter[0],pairX,t*.0+0);}
+      }
+      if(T<2){x=scatter[0];y=scatter[1];}
+      else if(T<3.3){ const t=ease(clamp((T-2)/.8));x=lerp(scatter[0],pairX,t);y=lerp(scatter[1],pairY,t);}
+      else if(T<4){ const t=ease(clamp((T-3.3)/.6));x=lerp(pairX,metaX,t);y=lerp(pairY,metaY,t);}
+      else{ const t=ease(clamp((T-4)/.8));x=lerp(metaX,pole*1.3,t);y=lerp(metaY,pY,t);}
+      // crossing over visual: swapped segment color on inner chromatid (maternal<->paternal)
+      let sw=null;
+      if(crossed&&i<2){sw={col:(i==0?col.p:col.m),which:i==0?1:0};}
+      const partner=i<2?(i==0?col.p:col.m):(i==2?col.p:col.m);
+      sw=crossed?{col:partner,which:1}:null;
+      if(i<2)drawChrom(c,cx+x,cy+y,d.L,0,d.c,rep,spread,sw);
+      else drawChrom(c,cx+x,cy+y,d.L,0,d.c,rep,spread,crossed?{col:partner,which:1}:null);
+    });
+    // synapsis link
+    if(T>=2.2&&T<3.3){
+      c.save();c.strokeStyle=css('--accent');c.setLineDash([3,3]);c.lineWidth=1.5;c.globalAlpha=clamp(T-2.2);
+      for(const y of[-40,38]){const k=ease(clamp((T-2)/.8));c.beginPath();c.moveTo(cx-14,cy+y);c.lineTo(cx+14,cy+y);c.stroke();}
+      c.restore();
+      if(T>=2.6){
+        c.fillStyle=css('--accent');c.font="700 12px Figtree";c.textAlign="center";
+        c.fillText("✂ crossing over",cx,cy-80*0-70);
+        c.strokeStyle=css('--accent');c.lineWidth=2;c.beginPath();c.arc(cx,cy-40+14,9,0,7);c.stroke();
+      }
+    }
+  } else if(T<6.2){
+    // telophase I -> 2 haploid cells, then meiosis II within
+    const a=ease(clamp((T-5)/.7));
+    const sep=lerp(0,95,a);
+    const m2=ease(clamp((T-6)/0)); 
+    for(const d of[-1,1]){
+      cellBody(c,cx,cy+d*sep,lerp(175,120,a),lerp(150,95,a),1);
+      const chs=d==-1?[{L:lA,c:col.m,x:-20},{L:lB,c:col.m,x:25}]:[{L:lA,c:col.p,x:-20},{L:lB,c:col.p,x:25}];
+      // with orientation: pair B reversed -> top has maternal A, paternal B
+      const set=d==-1?[{L:lA,c:col.m,x:-22},{L:lB,c:col.p,x:24}]:[{L:lA,c:col.p,x:-22},{L:lB,c:col.m,x:24}];
+      set.forEach((k,i)=>{
+        const swc=k.L==lA?(k.c==col.m?col.p:col.m):null;
+        drawChrom(c,cx+k.x,cy+d*sep,lerp(k.L,k.L*.85,a),0,k.c,true,5,{col:k.c==col.m?col.p:col.m,which:1});
+      });
+    }
+  } else if(T<7){
+    // meiosis II: chromosomes align and sister chromatids separate
+    const t=T-6;
+    const a=ease(clamp(t));
+    const sep=95;
+    for(const d of[-1,1]){
+      cellBody(c,cx,cy+d*sep,120,95,1);
+      const set=d==-1?[{L:lA,c:col.m,x:-22},{L:lB,c:col.p,x:24}]:[{L:lA,c:col.p,x:-22},{L:lB,c:col.m,x:24}];
+      const split=ease(clamp((t-.4)/.6));
+      set.forEach((k,i)=>{
+        if(split<.02){drawChrom(c,cx+k.x,cy+d*sep,k.L*.85,0,k.c,true,5,{col:k.c==col.m?col.p:col.m,which:1});}
+        else{
+          for(const s of[-1,1]){
+            const sw=s==1;
+            drawChromatid(c,cx+k.x+s*lerp(5,40,split)*0,cy+d*sep+0,k.L*.85*1,0,k.c,9);
+          }
+        }
+      });
+      if(split>=.02){
+        // draw split chromatids horizontally apart
+        c.save();
+      }
+    }
+  } else {
+    // final: four cells
+  }
+  return;
+}
+</script>
+
+<script>
+// Cleaner, definitive renderer (overrides the scene functions above for reliability)
+function chromXY(){}
+function drawCellBase(c,x,y,rx,ry){cellBody(c,x,y,rx,ry,1);}
+
+function renderMitosis(c,W,H,T){
+  const col=COL();c.clearRect(0,0,W,H);
+  const cx=W/2,cy=H/2;
+  const defs=[{L:70,c:col.m},{L:70,c:col.p},{L:44,c:col.m},{L:44,c:col.p}];
+  const scat=[[-55,-40],[50,-45],[-40,40],[55,35]];
+  const meta=[-54,-18,18,54];
+  const rep=T>=1;
+  const spr=rep?Math.min(4,1+(T-1)*3):0;
+  if(T<5){
+    cellBody(c,cx,cy,175,150,1);
+    nucleus(c,cx,cy,100,T<2?1:Math.max(0,1-(T-2)*3));
+    if(T>=3)spindle(c,cx,cy,128,Math.min(1,T-2.6));
+    defs.forEach((d,i)=>{
+      let x,y;
+      if(T<3){x=scat[i][0];y=scat[i][1];}
+      else if(T<4){const t=ease(clamp(T-3));x=lerp(scat[i][0],meta[i],t);y=lerp(scat[i][1],0,t);}
+      else x=meta[i],y=0;
+      const L=T<2?d.L*(0.7+0.3*Math.max(0,T-1)):d.L;
+      if(T<4){drawChrom(c,cx+x,cy+y,L,0,d.c,rep,spr);}
+      else{
+        const a=ease(clamp((T-4)/1));
+        const off=lerp(0,70,a);
+        const sp=lerp(spr,6,a*0);
+        // each chromatid becomes single chromosome moving to pole
+        drawChromatid(c,cx+x-spr*(1-a),cy-off,L*.85,0,d.c,9);
+        drawChromatid(c,cx+x+spr*(1-a),cy+off,L*.85,0,d.c,9);
+      }
+    });
+  } else {
+    const a=ease(clamp(T-5));
+    const sep=lerp(75,95,a);
+    for(const dir of[-1,1]){
+      const ry=lerp(110,92,a),rx=lerp(150,120,a);
+      cellBody(c,cx,cy+dir*sep,rx,ry,1);
+      nucleus(c,cx,cy+dir*sep,lerp(30,66,a),clamp(a*1.4));
+      defs.forEach((d,i)=>{
+        const px=lerp(meta[i],[-32,-8,16,38][i],a);
+        const py=lerp(0,[-12,8,-10,10][i],a);
+        const x=px,y=lerp(dir*0,py,1);
+        drawChromatid(c,cx+x,cy+dir*sep+y*1,d.L*lerp(.85,.55,a),0,d.c,8);
+      });
+    }
+  }
+}
+
+function renderMeiosis(c,W,H,T){
+  const col=COL();c.clearRect(0,0,W,H);
+  const cx=W/2,cy=H/2;
+  const rep=T>=1;
+  const spr=rep?Math.min(4,1+(T-1)*3):0;
+  const crossed=T>=2.5;
+  const defs=[
+    {L:70,c:col.m,o:col.p,i:0},{L:70,c:col.p,o:col.m,i:1},
+    {L:44,c:col.m,o:col.p,i:2},{L:44,c:col.p,o:col.m,i:3}];
+  const scat=[[-55,-40],[50,-45],[-40,40],[55,35]];
+  const pairP=[[-16,-44],[16,-44],[-16,44],[16,44]];
+  const metaP=[[-16,-44],[16,-44],[-16,44],[16,44]];
+  const poleP=[[-14,-100],[14,100],[-14,100],[14,-100]];
+  const sw=d=>crossed?{col:d.o,which:1}:null;
+  if(T<5){
+    cellBody(c,cx,cy,175,150,1);
+    nucleus(c,cx,cy,100,T<2?1:Math.max(0,1-(T-2)*3));
+    if(T>=3)spindle(c,cx,cy,128,Math.min(1,T-2.6));
+    if(T>=4&&T<5){/*fine*/}
+    defs.forEach((d,i)=>{
+      let x,y;
+      if(T<2){x=scat[i][0];y=scat[i][1];}
+      else if(T<3){const t=ease(clamp(T-2));x=lerp(scat[i][0],pairP[i][0],t);y=lerp(scat[i][1],pairP[i][1],t);}
+      else if(T<4){x=metaP[i][0];y=metaP[i][1];
+        if(T>=3){const t=ease(clamp(T-3));x=lerp(pairP[i][0],metaP[i][0]*(1),t);y=lerp(pairP[i][1],metaP[i][1]*.72,t);}}
+      else{const t=ease(clamp(T-4));x=lerp(metaP[i][0],poleP[i][0],t);y=lerp(metaP[i][1]*.72,poleP[i][1]*.8,t);}
+      const L=T<2?d.L*(0.7+0.3*Math.max(0,T-1)):d.L;
+      drawChrom(c,cx+x,cy+y,L,0,d.c,rep,spr,sw(d));
+    });
+    if(T>=2.2&&T<3.1){
+      c.save();c.strokeStyle=css('--accent');c.setLineDash([3,3]);c.lineWidth=1.5;c.globalAlpha=clamp(T-2.2);
+      for(const y of[-44,44]){c.beginPath();c.moveTo(cx-16,cy+y);c.lineTo(cx+16,cy+y);c.stroke();}
+      c.restore();
+    }
+    if(T>=2.5&&T<3.2){
+      c.fillStyle=css('--accent');c.font="700 13px Figtree";c.textAlign="center";
+      c.fillText("✂ crossing over",cx,cy-82);
+    }
+  } else if(T<7){
+    const a=ease(clamp(T-5));
+    const sep=lerp(75,95,a);
+    const m2=clamp(T-6);
+    const split=ease(clamp((m2-.3)/.7));
+    for(const dir of[-1,1]){
+      cellBody(c,cx,cy+dir*sep,lerp(150,120,a),lerp(110,92,a),1);
+      const set=dir==-1?[defs[0],defs[3]]:[defs[1],defs[2]];
+      if(T>=6)spindle(c,cx,cy+dir*sep,70,Math.min(1,m2*2));
+      set.forEach((d,k)=>{
+        const x=[-26,26][k];
+        if(split<.02){drawChrom(c,cx+x,cy+dir*sep,d.L*.85,0,d.c,true,5,{col:d.o,which:1});}
+        else{
+          const off=lerp(5,26,split);
+          drawChromatid(c,cx+x,cy+dir*sep-off,d.L*.8,0,d.c,9);
+          const segc=d.o;
+          drawChromatid(c,cx+x,cy+dir*sep+off,d.L*.8,0,d.c,9);
+        }
+      });
+    }
+  } else {
+    const a=ease(clamp(T-7));
+    for(const dir of[-1,1]){
+      const set=dir==-1?[defs[0],defs[3]]:[defs[1],defs[2]];
+      for(const h of[-1,1]){
+        const ccx=cx+h*lerp(0,125,a),ccy=cy+dir*lerp(95,100,a);
+        cellBody(c,ccx,ccy,lerp(120,82,a),lerp(92,70,a),1);
+        nucleus(c,ccx,ccy,lerp(20,48,a),clamp(a*1.5));
+        set.forEach((d,k)=>{
+          const mixed=(d.L==70&&h==1)||(d.L==44&&h==-1);
+          drawChromatid(c,ccx+[-14,14][k],ccy,d.L*lerp(.8,.5,a),0,(d.L==70&&h==1)?d.o:d.c,8);
+        });
+      }
+    }
+  }
+}
+
+const cm=document.getElementById('cm'),ci=document.getElementById('ci');
+const xm=cm.getContext('2d'),xi=ci.getContext('2d');
+function fit(cv){const r=cv.getBoundingClientRect();const d=window.devicePixelRatio||1;cv.width=560*d;cv.height=448*d;cv._d=d;}
+function frame(){
+  curT+=(tgt-curT)*0.07;if(Math.abs(tgt-curT)<.002)curT=tgt;
+  for(const [cv,x,fn] of [[cm,xm,renderMitosis],[ci,xi,renderMeiosis]]){
+    x.setTransform(cv._d,0,0,cv._d,0,0);
+    // scene time mapping
+    const T=curT;
+    fn(x,560,448,mapT(fn===renderMeiosis,T));
+  }
+  if(!document.hidden)requestAnimationFrame(frame);
+}
+// stage index -> internal timeline
+function mapT(mei,s){
+  // stage: 0 start,1 S,2 prophase,3 meta,4 ana,5 telo,6 mII,7 final
+  if(mei) return s;       // meiosis timeline equals stage index: 4->5 anaphase I done, 5->6 telophase, 6->7 meiosis II, 7->8 final
+  // mitosis: stages 0..5 map to 0..5 ; 6,7 remain at 5+
+  return Math.min(s,6);
+}
+function mitStageIdx(s){return Math.min(s,5)}
+
+// Timeline remap: meiosis internal T: 0 start,1 rep,2 prophase,3 metaI,4 anaI,5 teloI,6 meiosisII,7 final.
+// renderMeiosis expects: <5 phase one; 5-7 two cells (5 telophase, 6 II, 7 split done); >7 four cells.
+// Need to shift: stage 5(teloI)->T=5, stage 6 (II)->T=6.. 7(final)->T=8
+function mt(mei,s){
+  if(!mei){ // mitosis: anaphase at stage4 -> T=4..5 ; telo at stage5 -> T=5..6
+    return Math.min(s,5)+0; }
+  return s; }
+
+const stageT=(mei,s)=>mei?(s>=7?8:s):Math.min(s,5);
+function frame2(){
+  curT+=(tgt-curT)*0.06;if(Math.abs(tgt-curT)<.002)curT=tgt;
+  // mitosis: uses stage<=5 clamp
+  const Tm=Math.min(curT,6);
+  const Ti=curT>=6?(curT<7?curT:7+(curT-7)*1):curT;
+  for(const [cv,x,fn,T] of [[cm,xm,renderMitosis,Math.min(curT,6)],[ci,xi,renderMeiosis,mapMei(curT)]]){
+    x.setTransform(cv._d,0,0,cv._d,0,0);
+    fn(x,560,448,T);
+  }
+  raf=requestAnimationFrame(frame2);
+}
+function mapMei(t){ // 6..7 : meiosis II; 7: final
+  return t; // renderMeiosis handles 5-7 two-cell/meiosis II; >7 four cells
+}
+let raf;
+// Adjust: renderMeiosis final needs T>7; stage 7 target = 8
+function stageTarget(s){return s>=7?8:s;}
+
+// ---------- UI ----------
+const dots=document.getElementById('dots');
+const short=["Start","S phase","Prophase","Metaphase","Anaphase","Telophase","Meiosis II","Result"];
+short.forEach((n,i)=>{const b=document.createElement('button');b.className='dot';b.textContent=(i+1)+". "+n;b.setAttribute('aria-label','Go to stage '+(i+1)+': '+n);b.onclick=()=>{pause();go(i)};dots.appendChild(b)});
+const stats={
+ m:[["2n = 4","1×","Diploid"],["2n = 4","2×","Diploid"],["2n = 4","2×","Diploid"],["2n = 4","2×","Diploid"],["2n = 4 → 4 + 4","2×","Diploid"],["2n = 4 each","1×","Diploid"],["2n = 4 each","1×","Diploid"],["2n = 4 each","1×","Diploid (2 cells)"]],
+ i:[["2n = 4","1×","Diploid"],["2n = 4","2×","Diploid"],["2n = 4","2×","Diploid"],["2n = 4","2×","Diploid"],["2n → n (split)","2×","Becoming haploid"],["n = 2 each","2×","Haploid"],["n = 2 each","2× → 1×","Haploid"],["n = 2 each","1×","Haploid (4 cells)"]]
+};
+const flags={
+ m:[null,"DNA replicates","No pairing","Chromosomes in single file","Chromatids split",null,null,"Same as parent"],
+ i:[null,"DNA replicates","Crossing over!","Homologous pairs align","Number halves here!","Haploid cells",null,"4 unique cells"]
+};
+function go(s){
+  stage=Math.max(0,Math.min(N-1,s));tgt=stageTarget(stage);
+  const S=STAGES[stage];
+  document.getElementById('stageTitle').textContent=S.t;
+  document.getElementById('stageSub').textContent=S.s;
+  document.getElementById('mNote').textContent=S.m;
+  document.getElementById('iNote').textContent=S.i;
+  const [a,b,c]=stats.m[stage],[d,e,f]=stats.i[stage];
+  mN.textContent=a;mD.textContent=b;mP.textContent=c;iN.textContent=d;iD.textContent=e;iP.textContent=f;
+  [['fm',flags.m],['fi',flags.i]].forEach(([id,arr])=>{const el=document.getElementById(id);const t=arr[stage];el.textContent=t||'';el.classList.toggle('show',!!t)});
+  [...dots.children].forEach((x,i)=>x.classList.toggle('on',i===stage));
+  document.getElementById('prev').disabled=stage===0;
+  document.getElementById('next').disabled=stage===N-1;
+}
+function pause(){playing=false;clearInterval(timer);document.getElementById('play').textContent='▶ Play'}
+function playFn(){
+  if(playing){pause();return}
+  if(stage>=N-1)go(0);
+  playing=true;document.getElementById('play').textContent='❚❚ Pause';
+  timer=setInterval(()=>{if(stage>=N-1){pause();return}go(stage+1)},3600);
+}
+document.getElementById('prev').onclick=()=>{pause();go(stage-1)};
+document.getElementById('next').onclick=()=>{pause();go(stage+1)};
+document.getElementById('play').onclick=playFn;
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'){pause();go(stage+1)}if(e.key==='ArrowLeft'){pause();go(stage-1)}});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){cancelAnimationFrame(raf);pause()}else{cancelAnimationFrame(raf);raf=requestAnimationFrame(frame2)}});
+window.addEventListener('resize',()=>{fit(cm);fit(ci)});
+fit(cm);fit(ci);go(0);curT=0;raf=requestAnimationFrame(frame2);
+</script>
+</body>
+</html>
