@@ -17,9 +17,9 @@
 //
 // /validate/latex and /validate/mermaid (ops I-743) take the same key and follow
 // RENDER_API_KEY_REQUIRED. VALIDATE_API_KEY_REQUIRED=true|false overrides that for them
-// alone, so the validate routes can log their callers' keys before they refuse any
-// (false while RENDER_API_KEY_REQUIRED=true), the step 1 above. Any other value, or none,
-// follows RENDER_API_KEY_REQUIRED.
+// alone. With it false while RENDER_API_KEY_REQUIRED=true, the validate routes log each
+// caller's key state but still serve a call with no key (step 1 above for them); a wrong
+// key is refused, as in step 1. Any other value, or none, follows RENDER_API_KEY_REQUIRED.
 //
 // Each request logs one line:
 //   [RENDER_AUTH] key=<valid|missing|invalid|unconfigured> required=<bool> route=<route path>
