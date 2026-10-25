@@ -182,20 +182,31 @@ describe('a slow step: slow page or stopped page (settleStep, fake promises)', (
     assert.deepEqual(await settleStep(later(250, 'v'), () => later(260, true), o), { outcome: 'done', value: 'v', late: true });
   });
 
+  test('a step that answers during the confirmation is used at once, whether or not the probe has answered', async () => {
+    const t0 = Date.now();
+    assert.deepEqual(await settleStep(later(200, 'v'), never, o), { outcome: 'done', value: 'v', late: true });
+    assert.ok(Date.now() - t0 < 200 + 100, `${Date.now() - t0} ms`);
+  });
+
   test('a step that does not come while the page answers is skipped soon after, not a hang (a screenshot)', async () => {
     const t0 = Date.now();
     assert.deepEqual(await settleStep(never(), () => later(20, true), o), { outcome: 'skipped' });
-    assert.ok(Date.now() - t0 < 100 + 20 + 50 + 100, `${Date.now() - t0} ms`);
+    // Well before a hang would be called (stepTimeoutMs + hangConfirmMs).
+    assert.ok(Date.now() - t0 < 100 + 400, `${Date.now() - t0} ms`);
     // A probe that fails (the frame went away) answered too: not a loop.
     assert.deepEqual(await settleStep(never(), async () => { throw new Error('detached'); }, o), { outcome: 'skipped' });
   });
 
-  test('a page that answers nothing is hung after the confirmation, or at once when the deadline leaves none', async () => {
+  test('a page that answers nothing is hung after the confirmation; a window the deadline cut short calls nothing hung', async () => {
+    const strict = { ...o, minHangConfirmMs: 200 };
     let t0 = Date.now();
-    assert.deepEqual(await settleStep(never(), never, o), { outcome: 'hung' });
+    assert.deepEqual(await settleStep(never(), never, strict), { outcome: 'hung' });
     assert.ok(Date.now() - t0 >= 100 + 400 - 5, `${Date.now() - t0} ms`);
+    // Cut to 250 ms: still long enough to call it hung.
+    assert.deepEqual(await settleStep(never(), never, { ...strict, until: Date.now() + 350 }), { outcome: 'hung' });
+    // Cut to about 20 ms: too short to ask the page.
     t0 = Date.now();
-    assert.deepEqual(await settleStep(never(), never, { ...o, until: Date.now() + 120 }), { outcome: 'hung' });
+    assert.deepEqual(await settleStep(never(), never, { ...strict, until: Date.now() + 120 }), { outcome: 'unconfirmed' });
     assert.ok(Date.now() - t0 < 100 + 400, `${Date.now() - t0} ms`);
   });
 
@@ -257,6 +268,13 @@ describe('check server start (a fake browser)', () => {
     } finally {
       await new Promise((resolve) => server.close(resolve));
     }
+  });
+
+  test('a shutdown during the launch keeps the port closed', async () => {
+    const ready = { stuck: false, browser: async () => ({}) };
+    const port = await freePort();
+    assert.equal(await listenWhenReady(app, ready, { port, host: '127.0.0.1', log: quiet, closing: () => true }), null);
+    assert.equal(await refused(port), true);
   });
 
   test('a launch that fails still opens the port; one that got stuck does not', async () => {

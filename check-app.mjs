@@ -69,9 +69,11 @@ export function createCheckApp({ checkLayout, key = process.env.RENDER_API_KEY |
  * since the GuardedBrowser's onStuckLaunch ends the process.
  * @param {import('express').Express} app
  * @param {import('./guarded-browser.mjs').GuardedBrowser} browser
- * @returns {Promise<import('node:http').Server|null>} the listening server, or null when the launch got stuck
+ * @param {{ port?: number|string, host?: string, log?: Console, closing?: () => boolean }} [options]
+ * @returns {Promise<import('node:http').Server|null>} the listening server, or null when the launch got stuck or
+ *   the process is shutting down
  */
-export async function listenWhenReady(app, browser, { port, host, log = console } = {}) {
+export async function listenWhenReady(app, browser, { port, host, log = console, closing = () => false } = {}) {
   const t0 = Date.now();
   try {
     await browser.browser();
@@ -80,6 +82,8 @@ export async function listenWhenReady(app, browser, { port, host, log = console 
     log.error(`[CHECK_LAYOUT] browser start failed code=${errorCode(error)}`);
     if (browser.stuck) return null;
   }
+  // Shutting down while Chromium started (SIGTERM): the port never opens.
+  if (closing()) return null;
   return new Promise((resolve, reject) => {
     const where = host === undefined ? [port] : [port, host];
     // Express 5 passes a listen error (a port in use) to this callback.

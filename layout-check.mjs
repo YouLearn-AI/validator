@@ -59,7 +59,9 @@ export const CHECK_DEFAULTS = Object.freeze({
   // no confirmation it was called hung (I-610, 2026-10-24).
   stepTimeoutMs: 3000,
   // Cut to what the deadline leaves less answerReserveMs, so a check with a hang still answers before its deadline.
+  // A window cut under minHangConfirmMs calls nothing hung: the width ends with what it has, with no "Hang" error.
   hangConfirmMs: 5000,
+  minHangConfirmMs: 1000,
   answerReserveMs: 1000,
   // A measurement queued before the trivial evaluate has answered by the time it does (the frame runs them in turn).
   lateStepGraceMs: 500,
@@ -119,22 +121,32 @@ function within(promise, ms) {
 }
 
 /**
- * How a step that runs page code ended: { outcome: 'done', value, late } in time or late; 'skipped' when the page
- * answered `probe()` but the step had not come lateStepGraceMs later; 'hung' when the page did not answer within
- * hangConfirmMs after stepTimeoutMs, or by `until` (a Date.now() time) if that is sooner. A step's own error is thrown.
+ * How a step that runs page code ended. Past stepTimeoutMs, the step and `probe()` race for up to hangConfirmMs, or
+ * until `until` (a Date.now() time) if that is sooner:
+ * - 'done' { value, late }: the step answered, in time or late (a step's own error is thrown instead);
+ * - 'skipped': the page answered `probe()` but the step had not come lateStepGraceMs later;
+ * - 'hung': neither answered within a window of at least minHangConfirmMs;
+ * - 'unconfirmed': neither answered, but the deadline left a shorter window: too short to call the page hung.
  * @param {Promise} promise the step
  * @param {() => Promise} probe a trivial evaluate in the page frame; a rejection counts as an answer (not a loop)
  */
-export async function settleStep(promise, probe, { stepTimeoutMs, hangConfirmMs, lateStepGraceMs, until = Infinity }) {
+export async function settleStep(promise, probe, {
+  stepTimeoutMs, hangConfirmMs, minHangConfirmMs = 0, lateStepGraceMs, until = Infinity,
+}) {
   try {
     return { outcome: 'done', value: await within(promise, stepTimeoutMs), late: false };
   } catch (error) {
     if (!(error instanceof StepTimeout)) throw error;
   }
   const confirmMs = Math.max(0, Math.min(hangConfirmMs, until - Date.now()));
-  const answered = await within(Promise.resolve().then(probe).catch(() => true), confirmMs)
-    .then(() => true, () => false);
-  if (!answered) return { outcome: 'hung' };
+  const step = promise.then((value) => ({ value }), (error) => ({ error }));
+  const probed = Promise.resolve().then(probe).then(() => null, () => null);
+  const first = await within(Promise.race([step, probed]), confirmMs).catch(() => undefined);
+  if (first === undefined) return { outcome: confirmMs >= minHangConfirmMs ? 'hung' : 'unconfirmed' };
+  if (first !== null) {
+    if ('error' in first) throw first.error;
+    return { outcome: 'done', value: first.value, late: true };
+  }
   try {
     return { outcome: 'done', value: await within(promise, lateStepGraceMs), late: true };
   } catch (error) {
@@ -600,22 +612,22 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
       const frame = await frameElement.contentFrame();
       // A step that runs page code (settleStep). Past stepTimeoutMs, the page frame is asked a trivial evaluate: the
       // frame's main thread runs one task at a time, so it answers once a long task ends (a slow page) and never in
-      // an endless loop. Answered: the step's own answer if it comes soon after, else SKIPPED. Not answered within
-      // hangConfirmMs (cut to the deadline): HUNG, and a "Hang" error is recorded for the phase.
+      // an endless loop. Answered: the step's own answer if it comes soon after, else SKIPPED. Neither answered
+      // within hangConfirmMs (cut to the deadline): HUNG, with a "Hang" error for the phase unless the deadline left
+      // less than minHangConfirmMs to ask.
       const step = async (promise) => {
         const t0 = Date.now();
         const r = await settleStep(promise, () => frame.evaluate(() => true), {
-          stepTimeoutMs: o.stepTimeoutMs, hangConfirmMs: o.hangConfirmMs, lateStepGraceMs: o.lateStepGraceMs,
-          until: deadlineAt - o.answerReserveMs,
+          stepTimeoutMs: o.stepTimeoutMs, hangConfirmMs: o.hangConfirmMs, minHangConfirmMs: o.minHangConfirmMs,
+          lateStepGraceMs: o.lateStepGraceMs, until: deadlineAt - o.answerReserveMs,
         });
         if (r.outcome === 'done' && !r.late) return r.value;
         const stageName = progress.byWidth[width];
         // Times and codes only.
         log.info(`[CHECK_LAYOUT] slow step width=${width} stage=${stageName} ms=${Date.now() - t0} outcome=${r.outcome}`);
-        if (r.outcome === 'hung') {
-          keep(errorRecord({ name: 'Hang', message: HANG_MESSAGES[phase] }, phase));
-          return HUNG;
-        }
+        if (r.outcome === 'hung') keep(errorRecord({ name: 'Hang', message: HANG_MESSAGES[phase] }, phase));
+        // Not answering near the deadline: the width ends with what it has, as when hung, with no error.
+        if (r.outcome === 'hung' || r.outcome === 'unconfirmed') return HUNG;
         if (r.outcome === 'skipped') {
           // When the skipped step ends after all (or fails with its context), for the logs: how long it really took.
           promise.then(() => true, () => false).then((ok) => log.info(
@@ -722,7 +734,11 @@ export function createLayoutChecker(guardedBrowser, { options = {}, log = consol
         if (used === HUNG) return result({ shot, control });
       }
       // Cut to the deadline less the reserve: a page whose steps were slow still answers, instead of "timed_out".
-      await waitUntil(Math.min(Date.now() + o.controlWatchMs, deadlineAt - o.answerReserveMs), signal);
+      const watchUntil = Math.min(Date.now() + o.controlWatchMs, deadlineAt - o.answerReserveMs);
+      if (watchUntil - Date.now() < o.controlWatchMs) {
+        log.info(`[CHECK_LAYOUT] control watch cut width=${width} ms=${Math.max(0, watchUntil - Date.now())}`);
+      }
+      await waitUntil(watchUntil, signal);
       return result({ shot, control });
     } finally {
       // A width that ends early (an error, the deadline) still reports, so the other width never waits on it.

@@ -20,9 +20,11 @@ const app = createCheckApp({ checkLayout: createLayoutChecker(browser) });
 
 // Chromium starts while the instance starts, before the port opens (listenWhenReady says why), so the first
 // request finds it running: the backend sends GET /health when the model starts writing.
-const listening = listenWhenReady(app, browser, { port: process.env.PORT || 3002 });
+let closing = false;
+const listening = listenWhenReady(app, browser, { port: process.env.PORT || 3002, closing: () => closing });
 
 const shutdown = async () => {
+  closing = true;
   await browser.close();
   const server = await listening.catch(() => null);
   if (server) server.close(() => process.exit(0));
