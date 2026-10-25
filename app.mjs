@@ -3,20 +3,27 @@ import { validateDiagramSyntax } from './validator.mjs';
 import { delimitersProblem, validateLatex } from './latex-validator.mjs';
 import { renderScreenshot as defaultRenderScreenshot } from './screenshot-renderer.mjs';
 import { UrlRefused } from './egress-guard.mjs';
-import { renderAuth } from './render-auth.mjs';
+import { renderAuth, validateAuthSettings } from './render-auth.mjs';
 import { errorCode, jsonErrorHandler } from './request-errors.mjs';
 
 /**
  * The validator's Express app. server.mjs listens with the defaults; tests pass
  * their own renderer and key settings.
- * @param {{ renderScreenshot?: Function, auth?: Function }} [options]
+ * @param {{ renderScreenshot?: Function, auth?: Function, validateAuth?: Function }} [options]
  */
-export function createApp({ renderScreenshot = defaultRenderScreenshot, auth = renderAuth() } = {}) {
+export function createApp({
+  renderScreenshot = defaultRenderScreenshot,
+  auth = renderAuth(),
+  validateAuth = renderAuth(validateAuthSettings()),
+} = {}) {
   const app = express();
 
-  // The shared key for /render-screenshot is checked first, before any body is
-  // read (render-auth.mjs, ops I-602).
+  // The shared key is checked first, before any body is read (render-auth.mjs):
+  // /render-screenshot (ops I-602), and the validate routes, whose scans cost CPU
+  // in proportion to a crafted body (ops I-743). /health stays open.
   app.post('/render-screenshot', auth);
+  app.post('/validate/mermaid', validateAuth);
+  app.post('/validate/latex', validateAuth);
 
   // Default limit for most endpoints
   // inflate: false refuses compressed request bodies (415) instead of decompressing them:
