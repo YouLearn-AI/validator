@@ -81,6 +81,8 @@ const PAGES = {
       throw new RangeError('radius ' + n + ' is too large'); })();</script>`),
   // Spins forever once loaded.
   hang: page('<p>Spins</p><script>setTimeout(() => { for (;;) {} }, 200);</script>'),
+  // Spins forever before its load event.
+  loopBeforeLoad: page('<p>Spins</p><script>for (;;) {}</script>'),
   // Two overlapping labels, and a main thread busy for 2.5 s once, from 200 ms after load: the first sample's
   // measurement waits for it (a WebGL page's long task on a cold instance), but the page never stops answering.
   slowOnce: page(`<span style="position:absolute;left:40px;top:40px;font-size:20px">Left ventricle</span>
@@ -181,9 +183,16 @@ describe('a slow step: slow page or stopped page (settleStep, fake promises)', (
   test('the probe is sent only after the step\'s time; a step that comes within the grace after it is used', async () => {
     const t0 = Date.now();
     let probedAt = null;
-    const probe = () => { probedAt = Date.now() - t0; return later(10, true); };
-    // The probe answers at about 110 ms, the step at 130 ms: inside the 50 ms grace.
-    assert.deepEqual(await settleStep(later(130, 'v'), probe, o), { outcome: 'done', value: 'v', late: true });
+    // The step comes 20 ms after the probe has answered (the probe answers at once): inside the 50 ms grace, and
+    // only through the probe-first path.
+    let resolveStep;
+    const stepPromise = new Promise((resolve) => { resolveStep = resolve; });
+    const probe = () => {
+      probedAt = Date.now() - t0;
+      setTimeout(() => resolveStep('v'), 20);
+      return Promise.resolve(true);
+    };
+    assert.deepEqual(await settleStep(stepPromise, probe, o), { outcome: 'done', value: 'v', late: true });
     assert.ok(probedAt >= 95, `probe sent at ${probedAt} ms`);
     // A step that fails inside the grace throws its error.
     const failing = new Promise((_, reject) => setTimeout(() => reject(new Error('grace boom')), 130));
@@ -523,11 +532,22 @@ describe('layout check (Chromium)', { timeout: 300_000 }, () => {
 
   test('past the deadline the answer is "timed_out" and the next check runs', async () => {
     const t0 = Date.now();
-    const r = await checker({ deadlineMs: 1500 })({ html: PAGES.hang });
+    // Loops before its load event, with a load budget past the deadline: the hard deadline ends the check while a
+    // page call is pending, and the teardown resets the stuck Chromium.
+    const r = await checker({ deadlineMs: 2500, loadTimeoutMs: 10_000 })({ html: PAGES.loopBeforeLoad });
     assert.equal(r.status, 'timed_out');
-    assert.ok(Date.now() - t0 < 1500 + CHECK_DEFAULTS.teardownMs + 2000, `${Date.now() - t0} ms`);
+    assert.ok(r.timings.total_ms >= 2500, `${r.timings.total_ms} ms`);
+    assert.ok(Date.now() - t0 < 2500 + CHECK_DEFAULTS.teardownMs + 2000, `${Date.now() - t0} ms`);
     const next = await checker()({ html: PAGES.clean });
     assert.equal(next.status, 'ok');
+  });
+
+  test('a page step that cannot be confirmed before the deadline less the reserve answers "timed_out", not "Hang"', async () => {
+    // The first sample comes at load + 300 ms, past the deadline less the 1 s reserve: no time to ask the page.
+    const r = await checker({ deadlineMs: 1500 })({ html: PAGES.hang });
+    assert.equal(r.status, 'timed_out');
+    assert.deepEqual(r.errors, []);
+    assert.ok(r.timings.total_ms < 1500, `${r.timings.total_ms} ms`);
   });
 
   test('an error whose message quotes a changing number is one error; a page grown wider is one "wide"', async () => {
