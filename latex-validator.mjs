@@ -35,10 +35,9 @@ export const defaultDelimiters = [
   { left: "\\overline{", right: "}", display: false },
 ];
 
-// Limits for custom delimiters from a caller (POST /validate/latex, ops I-743 F-08). The backend sends none and
-// gets the 31 defaults; 64 entries leave room for the defaults plus a caller's own. 64 characters is over three
-// times the longest default (18): the closing scan compares the right delimiter at every character, so a long
-// one costs time on every character.
+// Limits for custom delimiters from a caller (POST /validate/latex, ops I-743 F-08). A caller's set replaces the
+// 31 defaults (the backend sends none); 64 entries is twice the default set, and 64 characters over three times
+// its longest delimiter (18).
 const MAX_DELIMITERS = 64;
 const MAX_DELIMITER_LENGTH = 64;
 

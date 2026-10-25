@@ -26,7 +26,7 @@ function withDeadline(promise, ms) {
 async function callInWorker(fn, ...args) {
   const worker = new Worker(WORKER, { workerData: { mode: 'call' } });
   try {
-    await withDeadline(once(worker, 'message'), READY_MS);
+    assert.notEqual(await withDeadline(once(worker, 'message'), READY_MS), TIMED_OUT, 'the worker did not start');
     worker.postMessage({ fn, args });
     return await withDeadline(once(worker, 'message').then(([message]) => message), DEADLINE_MS);
   } finally {
@@ -143,7 +143,8 @@ describe('POST /validate/latex', () => {
     assert.equal(katexError.body.errors[0].position, 24);
   });
 
-  // Macros need no check of their own: KaTeX stops a self-expanding macro after maxExpand (1000) expansions.
+  // Macros can't loop forever: KaTeX stops a self-expanding macro after maxExpand (1000) expansions. Those
+  // expansions can still multiply the work (macros or \def in the text alike); a field check can't bound that.
   test('a macro that expands itself answers at once', async () => {
     const answer = await app.post({ text: 'a \\(\\loop\\) b', macros: { '\\loop': '\\loop' } });
     assert.notEqual(answer, TIMED_OUT, 'the request stalled');
