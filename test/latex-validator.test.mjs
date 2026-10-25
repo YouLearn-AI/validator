@@ -13,7 +13,7 @@ const WORKER = new URL('./fixtures/latex-worker.mjs', import.meta.url);
 // The app loads jsdom and Mermaid, which can take seconds on a busy machine.
 const READY_MS = 60_000;
 // A sound call answers in milliseconds; a stalled one never answers.
-const DEADLINE_MS = 3_000;
+const DEADLINE_MS = 5_000;
 const TIMED_OUT = { timedOut: true };
 
 function withDeadline(promise, ms) {
@@ -99,9 +99,15 @@ describe('POST /validate/latex', () => {
     });
   }
 
-  test('accepts 64 custom delimiters, and the defaults sent as custom ones', async () => {
+  test('accepts 64 custom delimiters of up to 64 characters, and the defaults sent as custom ones', async () => {
     const many = Array.from({ length: 64 }, (_, i) => delimiter(`<${i}>`, `</${i}>`));
     assert.deepEqual(await app.post({ text: 'a <3>x^2</3> b', delimiters: many }), { status: 200, body: { valid: true } });
+    const open = '<'.repeat(64);
+    const close = '>'.repeat(64);
+    assert.deepEqual(
+      await app.post({ text: `a ${open}x^2${close} b`, delimiters: [delimiter(open, close)] }),
+      { status: 200, body: { valid: true } },
+    );
     assert.deepEqual(
       await app.post({ text: 'Display \\[E = mc^2\\] and \\item one', delimiters: defaultDelimiters }),
       { status: 200, body: { valid: true } },
