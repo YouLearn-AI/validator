@@ -178,8 +178,16 @@ describe('a slow step: slow page or stopped page (settleStep, fake promises)', (
     assert.deepEqual(await settleStep(later(10, 'v'), never, o), { outcome: 'done', value: 'v', late: false });
   });
 
-  test('a step past its time on a page that answers is used when it comes (a measurement queued before the probe)', async () => {
-    assert.deepEqual(await settleStep(later(250, 'v'), () => later(260, true), o), { outcome: 'done', value: 'v', late: true });
+  test('the probe is sent only after the step\'s time; a step that comes within the grace after it is used', async () => {
+    const t0 = Date.now();
+    let probedAt = null;
+    const probe = () => { probedAt = Date.now() - t0; return later(10, true); };
+    // The probe answers at about 110 ms, the step at 130 ms: inside the 50 ms grace.
+    assert.deepEqual(await settleStep(later(130, 'v'), probe, o), { outcome: 'done', value: 'v', late: true });
+    assert.ok(probedAt >= 95, `probe sent at ${probedAt} ms`);
+    // A step that fails inside the grace throws its error.
+    const failing = new Promise((_, reject) => setTimeout(() => reject(new Error('grace boom')), 130));
+    await assert.rejects(settleStep(failing, () => later(10, true), o), /grace boom/);
   });
 
   test('a step that answers during the confirmation is used at once, whether or not the probe has answered', async () => {
@@ -202,12 +210,16 @@ describe('a slow step: slow page or stopped page (settleStep, fake promises)', (
     let t0 = Date.now();
     assert.deepEqual(await settleStep(never(), never, strict), { outcome: 'hung' });
     assert.ok(Date.now() - t0 >= 100 + 400 - 5, `${Date.now() - t0} ms`);
-    // Cut to 250 ms: still long enough to call it hung.
-    assert.deepEqual(await settleStep(never(), never, { ...strict, until: Date.now() + 350 }), { outcome: 'hung' });
+    // Cut to about 350 ms: still long enough to call it hung.
+    assert.deepEqual(await settleStep(never(), never, { ...strict, until: Date.now() + 450 }), { outcome: 'hung' });
     // Cut to about 20 ms: too short to ask the page.
     t0 = Date.now();
     assert.deepEqual(await settleStep(never(), never, { ...strict, until: Date.now() + 120 }), { outcome: 'unconfirmed' });
     assert.ok(Date.now() - t0 < 100 + 400, `${Date.now() - t0} ms`);
+    // A step that starts 30 ms before `until` waits 30 ms, not its full time.
+    t0 = Date.now();
+    assert.deepEqual(await settleStep(never(), never, { ...strict, until: Date.now() + 30 }), { outcome: 'unconfirmed' });
+    assert.ok(Date.now() - t0 < 100, `${Date.now() - t0} ms`);
   });
 
   test('a step that fails throws its error, in time or late', async () => {
@@ -271,9 +283,16 @@ describe('check server start (a fake browser)', () => {
   });
 
   test('a shutdown during the launch keeps the port closed', async () => {
-    const ready = { stuck: false, browser: async () => ({}) };
+    let ready;
+    let closing = false;
+    const launching = { stuck: false, browser: () => new Promise((resolve) => { ready = resolve; }) };
     const port = await freePort();
-    assert.equal(await listenWhenReady(app, ready, { port, host: '127.0.0.1', log: quiet, closing: () => true }), null);
+    const listening = listenWhenReady(app, launching, { port, host: '127.0.0.1', log: quiet, closing: () => closing });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // SIGTERM while Chromium starts, then the launch returns.
+    closing = true;
+    ready({});
+    assert.equal(await listening, null);
     assert.equal(await refused(port), true);
   });
 
