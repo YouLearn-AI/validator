@@ -11,9 +11,10 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { GuardedBrowser } from '../guarded-browser.mjs';
-import { createCheckApp } from '../check-app.mjs';
+import { createCheckApp, listenWhenReady } from '../check-app.mjs';
 import {
   CHECK_DEFAULTS, CheckBusy, createLayoutChecker, errorRecord, parseWidths, profileFor, sanitizeSample, selectFindings,
+  settleStep,
 } from '../layout-check.mjs';
 
 const FAKE_PUBLIC = '93.184.216.34';
@@ -80,6 +81,15 @@ const PAGES = {
       throw new RangeError('radius ' + n + ' is too large'); })();</script>`),
   // Spins forever once loaded.
   hang: page('<p>Spins</p><script>setTimeout(() => { for (;;) {} }, 200);</script>'),
+  // Spins forever before its load event.
+  loopBeforeLoad: page('<p>Spins</p><script>for (;;) {}</script>'),
+  // Two overlapping labels, and a main thread busy for 2.5 s once, from 200 ms after load: the first sample's
+  // measurement waits for it (a WebGL page's long task on a cold instance), but the page never stops answering.
+  slowOnce: page(`<span style="position:absolute;left:40px;top:40px;font-size:20px">Left ventricle</span>
+    <span style="position:absolute;left:60px;top:44px;font-size:20px">Right atrium</span><script>
+    setTimeout(() => { const t = performance.now(); while (performance.now() - t < 2500) {} }, 200);</script>`),
+  // A Start button whose handler takes 2.5 s, then returns.
+  slowOnClick: page(`<p>Press it</p><button onclick="const t = performance.now(); while (performance.now() - t < 2500) {}">Start</button>`),
 };
 
 function listen(server) {
@@ -161,6 +171,73 @@ describe('layout check: parsing and selection (no browser)', () => {
   });
 });
 
+describe('a slow step: slow page or stopped page (settleStep, fake promises)', () => {
+  const later = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
+  const never = () => new Promise(() => {});
+  const o = { stepTimeoutMs: 100, hangConfirmMs: 400, lateStepGraceMs: 50 };
+
+  test('a step in time is done', async () => {
+    assert.deepEqual(await settleStep(later(10, 'v'), never, o), { outcome: 'done', value: 'v', late: false });
+  });
+
+  test('the probe is sent only after the step\'s time; a step that comes within the grace after it is used', async () => {
+    const t0 = Date.now();
+    let probedAt = null;
+    // The step comes 20 ms after the probe has answered (the probe answers at once): inside the 50 ms grace, and
+    // only through the probe-first path.
+    let resolveStep;
+    const stepPromise = new Promise((resolve) => { resolveStep = resolve; });
+    const probe = () => {
+      probedAt = Date.now() - t0;
+      setTimeout(() => resolveStep('v'), 20);
+      return Promise.resolve(true);
+    };
+    assert.deepEqual(await settleStep(stepPromise, probe, o), { outcome: 'done', value: 'v', late: true });
+    assert.ok(probedAt >= 95, `probe sent at ${probedAt} ms`);
+    // A step that fails inside the grace throws its error.
+    const failing = new Promise((_, reject) => setTimeout(() => reject(new Error('grace boom')), 130));
+    await assert.rejects(settleStep(failing, () => later(10, true), o), /grace boom/);
+  });
+
+  test('a step that answers during the confirmation is used at once, whether or not the probe has answered', async () => {
+    const t0 = Date.now();
+    assert.deepEqual(await settleStep(later(200, 'v'), never, o), { outcome: 'done', value: 'v', late: true });
+    assert.ok(Date.now() - t0 < 200 + 100, `${Date.now() - t0} ms`);
+  });
+
+  test('a step that does not come while the page answers is skipped soon after, not a hang (a screenshot)', async () => {
+    const t0 = Date.now();
+    assert.deepEqual(await settleStep(never(), () => later(20, true), o), { outcome: 'skipped' });
+    // Well before a hang would be called (stepTimeoutMs + hangConfirmMs).
+    assert.ok(Date.now() - t0 < 100 + 400, `${Date.now() - t0} ms`);
+    // A probe that fails (the frame went away) answered too: not a loop.
+    assert.deepEqual(await settleStep(never(), async () => { throw new Error('detached'); }, o), { outcome: 'skipped' });
+  });
+
+  test('a page that answers nothing is hung after the confirmation; a window the deadline cut short calls nothing hung', async () => {
+    const strict = { ...o, minHangConfirmMs: 200 };
+    let t0 = Date.now();
+    assert.deepEqual(await settleStep(never(), never, strict), { outcome: 'hung' });
+    assert.ok(Date.now() - t0 >= 100 + 400 - 5, `${Date.now() - t0} ms`);
+    // Cut to about 350 ms: still long enough to call it hung.
+    assert.deepEqual(await settleStep(never(), never, { ...strict, until: Date.now() + 450 }), { outcome: 'hung' });
+    // Cut to about 20 ms: too short to ask the page.
+    t0 = Date.now();
+    assert.deepEqual(await settleStep(never(), never, { ...strict, until: Date.now() + 120 }), { outcome: 'unconfirmed' });
+    assert.ok(Date.now() - t0 < 100 + 400, `${Date.now() - t0} ms`);
+    // A step that starts 30 ms before `until` waits 30 ms, not its full time.
+    t0 = Date.now();
+    assert.deepEqual(await settleStep(never(), never, { ...strict, until: Date.now() + 30 }), { outcome: 'unconfirmed' });
+    assert.ok(Date.now() - t0 < 100, `${Date.now() - t0} ms`);
+  });
+
+  test('a step that fails throws its error, in time or late', async () => {
+    await assert.rejects(settleStep(Promise.reject(new Error('boom')), never, o), /boom/);
+    const lateFail = new Promise((_, reject) => setTimeout(() => reject(new Error('late boom')), 150));
+    await assert.rejects(settleStep(lateFail, () => later(160, true), o), /late boom/);
+  });
+});
+
 describe('layout check teardown (a fake browser)', () => {
   test('a context that opens after the deadline is closed, not left behind', async () => {
     let closed = 0;
@@ -178,6 +255,65 @@ describe('layout check teardown (a fake browser)', () => {
     assert.equal(r.status, 'timed_out');
     await new Promise((resolve) => setTimeout(resolve, 150));
     assert.equal(closed, 1);
+  });
+});
+
+describe('check server start (a fake browser)', () => {
+  const quiet = { log() {}, info() {}, warn() {}, error() {} };
+  const app = createCheckApp({ checkLayout: async () => ({}), key: KEY, log: quiet });
+  // A free port: the server must not be listening on it until Chromium is ready.
+  const freePort = async () => {
+    const probe = http.createServer();
+    const port = await listen(probe);
+    await new Promise((resolve) => probe.close(resolve));
+    return port;
+  };
+  const refused = (port) => new Promise((resolve) => {
+    const socket = net.connect(port, '127.0.0.1');
+    socket.once('connect', () => { socket.destroy(); resolve(false); });
+    socket.once('error', () => resolve(true));
+  });
+
+  test('the port opens only once Chromium is ready (a cold instance starts with CPU, then takes requests)', async () => {
+    let ready;
+    const fake = { stuck: false, browser: () => new Promise((resolve) => { ready = resolve; }) };
+    const port = await freePort();
+    const listening = listenWhenReady(app, fake, { port, host: '127.0.0.1', log: quiet });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(await refused(port), true, 'listening before Chromium was ready');
+    ready({});
+    const server = await listening;
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/health`);
+      assert.deepEqual(await r.json(), { status: 'ok' });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  test('a shutdown during the launch keeps the port closed', async () => {
+    let ready;
+    let closing = false;
+    const launching = { stuck: false, browser: () => new Promise((resolve) => { ready = resolve; }) };
+    const port = await freePort();
+    const listening = listenWhenReady(app, launching, { port, host: '127.0.0.1', log: quiet, closing: () => closing });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // SIGTERM while Chromium starts, then the launch returns.
+    closing = true;
+    ready({});
+    assert.equal(await listening, null);
+    assert.equal(await refused(port), true);
+  });
+
+  test('a launch that fails still opens the port; one that got stuck does not', async () => {
+    const failed = { stuck: false, browser: async () => { throw new Error('launch failed'); } };
+    const server = await listenWhenReady(app, failed, { port: 0, host: '127.0.0.1', log: quiet });
+    assert.ok(server.address().port > 0);
+    await new Promise((resolve) => server.close(resolve));
+    const stuck = { stuck: true, browser: async () => { throw new Error('Browser launch timed out'); } };
+    const port = await freePort();
+    assert.equal(await listenWhenReady(app, stuck, { port, host: '127.0.0.1', log: quiet }), null);
+    assert.equal(await refused(port), true);
   });
 });
 
@@ -354,13 +490,64 @@ describe('layout check (Chromium)', { timeout: 300_000 }, () => {
     assert.equal(r.widths['390'].control, 'button');
   });
 
+  test('a page busy for longer than a step but still answering gets no "Hang", and the late sample counts', async () => {
+    const out = [];
+    const log = { info: (line) => out.push(line), warn() {}, error() {}, log() {} };
+    const r = await checker({ stepTimeoutMs: 1000 }, log)({ html: PAGES.slowOnce });
+    assert.equal(r.status, 'ok');
+    assert.deepEqual(r.errors, []);
+    // The overlap is seen in all 3 samples, the first of them measured late.
+    for (const w of [390, 1280]) {
+      const f = r.findings.find((x) => x.width === w && x.type === 'overlap');
+      assert.equal(f?.seen, 3, JSON.stringify(r.findings));
+    }
+    assert.equal(r.widths['390'].control, 'none');
+    assert.ok(out.some((l) => /^\[CHECK_LAYOUT\] slow step width=390 stage=sample ms=\d+ outcome=done$/.test(l)),
+      out.join('\n'));
+  });
+
+  test('a control whose handler is slow but returns gets no "Hang"', async () => {
+    const r = await checker({ stepTimeoutMs: 1000 })({ html: PAGES.slowOnClick, widths: [390] });
+    assert.equal(r.status, 'ok');
+    assert.deepEqual(r.errors, []);
+    assert.equal(r.widths['390'].control, 'button');
+  });
+
+  test('a slow control near the deadline still answers: the watch after it is cut to the deadline', async () => {
+    const r = await checker({ stepTimeoutMs: 1000, controlWatchMs: 10_000, deadlineMs: 7000 })({ html: PAGES.slowOnClick, widths: [390] });
+    assert.equal(r.status, 'ok');
+    assert.deepEqual(r.errors, []);
+    assert.equal(r.widths['390'].control, 'button');
+    assert.ok(r.timings.total_ms < 7000, `${r.timings.total_ms} ms`);
+  });
+
+  test('a hang is confirmed within the deadline, however long the confirmation may be', async () => {
+    const t0 = Date.now();
+    const r = await checker({ stepTimeoutMs: 1000, hangConfirmMs: 60_000, deadlineMs: 7000 })({ html: PAGES.hang });
+    assert.equal(r.status, 'ok');
+    assert.deepEqual(r.errors.map((e) => `${e.width}:${e.phase}:${e.name}`).sort(), ['1280:load:Hang', '390:load:Hang']);
+    assert.ok(r.timings.total_ms < 7000, `${r.timings.total_ms} ms`);
+    assert.ok(Date.now() - t0 < 7000 + CHECK_DEFAULTS.teardownMs + 2000, `${Date.now() - t0} ms`);
+  });
+
   test('past the deadline the answer is "timed_out" and the next check runs', async () => {
     const t0 = Date.now();
-    const r = await checker({ deadlineMs: 1500 })({ html: PAGES.hang });
+    // Loops before its load event, with a load budget past the deadline: the hard deadline ends the check while a
+    // page call is pending, and the teardown resets the stuck Chromium.
+    const r = await checker({ deadlineMs: 2500, loadTimeoutMs: 10_000 })({ html: PAGES.loopBeforeLoad });
     assert.equal(r.status, 'timed_out');
-    assert.ok(Date.now() - t0 < 1500 + CHECK_DEFAULTS.teardownMs + 2000, `${Date.now() - t0} ms`);
+    assert.ok(r.timings.total_ms >= 2500, `${r.timings.total_ms} ms`);
+    assert.ok(Date.now() - t0 < 2500 + CHECK_DEFAULTS.teardownMs + 2000, `${Date.now() - t0} ms`);
     const next = await checker()({ html: PAGES.clean });
     assert.equal(next.status, 'ok');
+  });
+
+  test('a page step that cannot be confirmed before the deadline less the reserve answers "timed_out", not "Hang"', async () => {
+    // The first sample comes at load + 300 ms, past the deadline less the 1 s reserve: no time to ask the page.
+    const r = await checker({ deadlineMs: 1500 })({ html: PAGES.hang });
+    assert.equal(r.status, 'timed_out');
+    assert.deepEqual(r.errors, []);
+    assert.ok(r.timings.total_ms < 1500, `${r.timings.total_ms} ms`);
   });
 
   test('an error whose message quotes a changing number is one error; a page grown wider is one "wide"', async () => {
