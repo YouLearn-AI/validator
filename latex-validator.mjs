@@ -35,6 +35,53 @@ export const defaultDelimiters = [
   { left: "\\overline{", right: "}", display: false },
 ];
 
+// Limits for custom delimiters from a caller (POST /validate/latex, ops I-743 F-08). The backend sends none and
+// gets the 31 defaults; 64 entries leave room for the defaults plus a caller's own. 64 characters is over three
+// times the longest default (18): the closing scan compares the right delimiter at every character, so a long
+// one costs time on every character.
+const MAX_DELIMITERS = 64;
+const MAX_DELIMITER_LENGTH = 64;
+
+/**
+ * Why custom delimiters can't be used, or null when they can: an array of 1 to MAX_DELIMITERS objects, each
+ * with a non-empty `left` string, a `right` string (empty for an opener that has no closer, like \item), both
+ * at most MAX_DELIMITER_LENGTH characters, and a boolean `display`. An empty `left` matches at every position
+ * and never moves the scan forward.
+ * @param {unknown} delimiters
+ * @returns {string | null}
+ */
+export function delimitersProblem(delimiters) {
+  if (!Array.isArray(delimiters)) return '"delimiters" must be an array';
+  if (delimiters.length === 0 || delimiters.length > MAX_DELIMITERS) {
+    return `"delimiters" must have 1 to ${MAX_DELIMITERS} entries`;
+  }
+  for (const [i, delimiter] of delimiters.entries()) {
+    if (delimiter === null || typeof delimiter !== "object" || Array.isArray(delimiter)) {
+      return `delimiters[${i}] must be an object`;
+    }
+    const { left, right, display } = delimiter;
+    if (typeof left !== "string" || left.length === 0 || left.length > MAX_DELIMITER_LENGTH) {
+      return `delimiters[${i}].left must be a non-empty string of at most ${MAX_DELIMITER_LENGTH} characters`;
+    }
+    if (typeof right !== "string" || right.length > MAX_DELIMITER_LENGTH) {
+      return `delimiters[${i}].right must be a string of at most ${MAX_DELIMITER_LENGTH} characters`;
+    }
+    if (typeof display !== "boolean") return `delimiters[${i}].display must be true or false`;
+  }
+  return null;
+}
+
+/**
+ * A scanning pass that did not move forward. Thrown instead of repeating the pass forever, which would hold
+ * Node's only thread and stall every request on the instance (ops I-743 F-08).
+ */
+class LatexScanStalled extends Error {
+  constructor(position) {
+    super(`LaTeX scan made no progress at position ${position}`);
+    this.name = "LatexScanStalled";
+  }
+}
+
 // Utility functions (copied from local utilities to be self-contained)
 function escapeRegex(text) {
   return text.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
@@ -78,12 +125,19 @@ function splitAtDelimiters(
 ) {
   let index;
   const data = [];
+  const totalLength = text.length;
 
   const regexLeft = new RegExp(
     "(" + delimiters.map((x) => escapeRegex(x.left)).join("|") + ")",
   );
 
+  // Each pass must consume some text; an empty delimiter consumes none.
+  let previousLength = Infinity;
   while (true) {
+    if (text.length >= previousLength) {
+      throw new LatexScanStalled(totalLength - text.length);
+    }
+    previousLength = text.length;
     index = text.search(regexLeft);
     if (index === -1) {
       break;
@@ -159,7 +213,14 @@ export function validateLatex(
     "(" + delimiters.map((x) => escapeRegex(x.left)).join("|") + ")"
   );
 
+  // Each pass must start past the previous one; an empty delimiter would start every pass at the same place.
+  // The inner closing scan below always moves forward (searchPos++ on every pass).
+  let previousStart = -1;
   while (position < text.length) {
+    if (position <= previousStart) {
+      throw new LatexScanStalled(position);
+    }
+    previousStart = position;
     const match = text.slice(position).search(regexLeft);
     
     if (match === -1) {

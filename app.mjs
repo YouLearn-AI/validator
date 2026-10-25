@@ -1,6 +1,6 @@
 import express from 'express';
 import { validateDiagramSyntax } from './validator.mjs';
-import { validateLatex } from './latex-validator.mjs';
+import { delimitersProblem, validateLatex } from './latex-validator.mjs';
 import { renderScreenshot as defaultRenderScreenshot } from './screenshot-renderer.mjs';
 import { UrlRefused } from './egress-guard.mjs';
 import { renderAuth } from './render-auth.mjs';
@@ -50,8 +50,16 @@ export function createApp({ renderScreenshot = defaultRenderScreenshot, auth = r
       return res.status(400).json({ valid: false, error: 'Body must include a non-empty "text" string' });
     }
 
+    // Custom delimiters are checked before any work: an empty opening delimiter never moves the scan
+    // forward and would hold this thread (ops I-743 F-08). Without them, the defaults apply.
+    const delimiters = req.body?.delimiters;
+    const problem = delimiters === undefined ? null : delimitersProblem(delimiters);
+    if (problem) {
+      return res.status(400).json({ valid: false, error: problem });
+    }
+
     try {
-      const result = validateLatex(text, req.body?.delimiters, req.body?.macros);
+      const result = validateLatex(text, delimiters, req.body?.macros);
       if (result.isValid) {
         return res.json({ valid: true });
       } else {
