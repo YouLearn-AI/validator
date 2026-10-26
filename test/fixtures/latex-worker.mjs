@@ -9,6 +9,7 @@ if (workerData.mode === 'serve') {
   const app = createApp({
     renderScreenshot: async () => { throw new Error('not used'); },
     auth: (_req, _res, next) => next(),
+    validateAuth: (_req, _res, next) => next(),
   });
   const server = app.listen(0, '127.0.0.1', () => parentPort.postMessage(server.address().port));
 } else {
