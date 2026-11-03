@@ -1,13 +1,11 @@
 # The interactive video renderer (ops I-609): this repo's code, its own private Cloud Run service.
-# Same base as the validator's Dockerfile plus Debian's ffmpeg, which has libx264 (Playwright's own ffmpeg
-# writes only VP9 WebM, which iMessage refuses).
+# Same base and browser as the validator's Dockerfile plus Debian's ffmpeg, which has libx264 (Playwright's
+# own ffmpeg writes only VP9 WebM, which iMessage refuses).
 # The same image runs the interactive layout checker (ops I-610) as a service of its own, with its own entry
 # point: Cloud Run `--command node --args check-server.mjs`.
 FROM node:24.22.1-slim
 
 WORKDIR /app
-
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg \
@@ -15,7 +13,13 @@ RUN apt-get update \
 
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
-RUN npx playwright install --with-deps chromium
+# Chromium's system libraries and fonts, without Playwright's own browser download
+RUN npx playwright install-deps chromium
+
+# Chrome for Testing's headless shell at a pinned build (ops I-1114); guarded-browser.mjs launches it
+COPY install-chrome-headless-shell.sh /tmp/install-chrome-headless-shell.sh
+RUN sh /tmp/install-chrome-headless-shell.sh && rm /tmp/install-chrome-headless-shell.sh
+ENV CHROMIUM_EXECUTABLE_PATH=/opt/chrome-headless-shell-linux64/chrome-headless-shell
 
 COPY . .
 

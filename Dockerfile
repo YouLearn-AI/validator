@@ -2,18 +2,20 @@ FROM node:24.22.1-slim
 
 WORKDIR /app
 
-# Browsers in a shared path that the non-root user below can read
-# (the default, /root/.cache/ms-playwright, is root's own).
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-
 # Copy dependency files
 COPY package.json package-lock.json ./
 
-# Install Node.js dependencies (skip postinstall — we install Playwright manually below)
+# Install Node.js dependencies (skip postinstall: no Playwright browser download)
 RUN npm ci --ignore-scripts
 
-# Install Playwright Chromium binary AND its required system libraries (libnss3, libatk, etc.)
-RUN npx playwright install --with-deps chromium
+# The system libraries and fonts Playwright's Chromium needs (libnss3, libatk, emoji and CJK fonts, etc.)
+RUN npx playwright install-deps chromium
+
+# The browser: Chrome for Testing's headless shell at a pinned build (ops I-1114), the kind Playwright runs for
+# headless Chromium; guarded-browser.mjs launches the file CHROMIUM_EXECUTABLE_PATH names
+COPY install-chrome-headless-shell.sh /tmp/install-chrome-headless-shell.sh
+RUN sh /tmp/install-chrome-headless-shell.sh && rm /tmp/install-chrome-headless-shell.sh
+ENV CHROMIUM_EXECUTABLE_PATH=/opt/chrome-headless-shell-linux64/chrome-headless-shell
 
 # Copy application code
 COPY . .

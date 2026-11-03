@@ -16,7 +16,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { addressRefusal, checkRequestUrl, checkUrl, publicAddresses, UrlRefused } from '../egress-guard.mjs';
-import { GuardedBrowser } from '../guarded-browser.mjs';
+import { browserExecutablePath, GuardedBrowser } from '../guarded-browser.mjs';
 import { createScreenshotRenderer } from '../screenshot-renderer.mjs';
 import { keysMatch, renderAuth } from '../render-auth.mjs';
 import { createApp } from '../app.mjs';
@@ -477,5 +477,29 @@ describe('/render-screenshot', { timeout: 120_000 }, () => {
     assert.equal(browser.sandbox, true);
     const proxy = await browser.egressProxy();
     assert.ok(proxy.refusals() > 0);
+  });
+
+  test('the image\'s pinned browser is the one launched, on both launch paths (I-1114)', async () => {
+    assert.equal(browserExecutablePath({ CHROMIUM_EXECUTABLE_PATH: '/opt/x/chrome-headless-shell' }), '/opt/x/chrome-headless-shell');
+    assert.equal(browserExecutablePath({}), undefined, 'a local run keeps Playwright\'s own');
+    const seen = [];
+    for (const killable of [false, true]) {
+      const guarded = new GuardedBrowser({
+        log: guardLog.log,
+        killable,
+        executablePath: '/opt/x/chrome-headless-shell',
+        launchBrowser: async (options) => { seen.push(options); throw new Error('not launched'); },
+        launchServer: async (options) => { seen.push(options); throw new Error('not launched'); },
+      });
+      await assert.rejects(guarded.browser(), /not launched/);
+      await guarded.close();
+    }
+    assert.equal(seen.length, 2);
+    for (const options of seen) {
+      assert.equal(options.executablePath, '/opt/x/chrome-headless-shell');
+      assert.equal(options.headless, true);
+      assert.equal(options.chromiumSandbox, true);
+      assert.match(options.proxy.server, /^http:\/\/127\.0\.0\.1:\d+$/);
+    }
   });
 });
