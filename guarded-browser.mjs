@@ -1,5 +1,9 @@
 // One headless Chromium for renders of untrusted pages (ops I-602).
 //
+// - In the images the browser is the Chrome for Testing headless shell that
+//   install-chrome-headless-shell.sh pins, at the path CHROMIUM_EXECUTABLE_PATH
+//   names, not Playwright's own download, which lagged Chrome's security fixes
+//   (ops I-1114). Without that variable (a local run) Playwright's own is used.
 // - The Chromium sandbox is on (Playwright passes --no-sandbox unless
 //   chromiumSandbox is true). On Linux it needs a non-root user and user
 //   namespaces: the Dockerfile runs as `node`, and Cloud Run's second-generation
@@ -16,6 +20,11 @@
 
 import { chromium } from 'playwright';
 import { startEgressProxy } from './egress-guard.mjs';
+
+/** The browser binary to launch: the image's pinned one, or Playwright's own when unset (a local run). */
+export function browserExecutablePath(env = process.env) {
+  return env.CHROMIUM_EXECUTABLE_PATH || undefined;
+}
 
 export const CHROMIUM_ARGS = [
   '--disable-dev-shm-usage',
@@ -61,7 +70,7 @@ export class GuardedBrowser {
    *   group and removes its profile, and browser() refuses from then on.
    */
   constructor({
-    guard = {}, sandbox = sandboxEnabled(), log = console, killable = false,
+    guard = {}, sandbox = sandboxEnabled(), executablePath = browserExecutablePath(), log = console, killable = false,
     launchBrowser = (o) => chromium.launch(o), launchServer = (o) => chromium.launchServer(o),
     launchTimeoutMs = LAUNCH_TIMEOUT_MS, onStuckLaunch = null,
   } = {}) {
@@ -73,6 +82,7 @@ export class GuardedBrowser {
     this.stuck = false;
     this.guardOptions = { log, ...guard };
     this.sandbox = sandbox;
+    this.executablePath = executablePath;
     this.log = log;
     this.proxy = null;
     this.current = null; // { browser, kill } of the running Chromium
@@ -92,6 +102,7 @@ export class GuardedBrowser {
     const proxy = await this.egressProxy();
     if (!this.sandbox) this.log.warn('[RENDER_SANDBOX] off: CHROMIUM_SANDBOX=off, Chromium runs without its sandbox');
     const options = {
+      executablePath: this.executablePath,
       headless: true,
       chromiumSandbox: this.sandbox,
       args: CHROMIUM_ARGS,
