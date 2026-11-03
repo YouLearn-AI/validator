@@ -21,5 +21,10 @@ wget -q -O "$deb" "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chr
 echo "$CHROME_SHA256  $deb" | sha256sum -c -
 apt-get install -y --no-install-recommends "$deb"
 rm -f "$deb"
+# The package installs chrome-sandbox setuid root, a fallback for hosts without user namespaces. Cloud Run's
+# second-generation environment has them, and Chrome uses them first, so the helper is never needed; without
+# the setuid bit Chrome sandboxes exactly as Playwright's Chromium did (user namespaces, or no launch), and the
+# image gains no setuid-root binary that a page which escapes the renderer could aim at.
+chmod 0755 /opt/google/chrome/chrome-sandbox
 rm -rf /var/lib/apt/lists/*
 /opt/google/chrome/chrome --version
