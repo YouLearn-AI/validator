@@ -483,16 +483,23 @@ describe('/render-screenshot', { timeout: 120_000 }, () => {
     assert.equal(browserExecutablePath({ CHROMIUM_EXECUTABLE_PATH: '/opt/x/chrome-headless-shell' }), '/opt/x/chrome-headless-shell');
     assert.equal(browserExecutablePath({}), undefined, 'a local run keeps Playwright\'s own');
     const seen = [];
-    for (const killable of [false, true]) {
-      const guarded = new GuardedBrowser({
-        log: guardLog.log,
-        killable,
-        executablePath: '/opt/x/chrome-headless-shell',
-        launchBrowser: async (options) => { seen.push(options); throw new Error('not launched'); },
-        launchServer: async (options) => { seen.push(options); throw new Error('not launched'); },
-      });
-      await assert.rejects(guarded.browser(), /not launched/);
-      await guarded.close();
+    // As the images build it: no executablePath option, the path from the environment.
+    const saved = process.env.CHROMIUM_EXECUTABLE_PATH;
+    process.env.CHROMIUM_EXECUTABLE_PATH = '/opt/x/chrome-headless-shell';
+    try {
+      for (const killable of [false, true]) {
+        const guarded = new GuardedBrowser({
+          log: guardLog.log,
+          killable,
+          launchBrowser: async (options) => { seen.push(options); throw new Error('not launched'); },
+          launchServer: async (options) => { seen.push(options); throw new Error('not launched'); },
+        });
+        await assert.rejects(guarded.browser(), /not launched/);
+        await guarded.close();
+      }
+    } finally {
+      if (saved === undefined) delete process.env.CHROMIUM_EXECUTABLE_PATH;
+      else process.env.CHROMIUM_EXECUTABLE_PATH = saved;
     }
     assert.equal(seen.length, 2);
     for (const options of seen) {
