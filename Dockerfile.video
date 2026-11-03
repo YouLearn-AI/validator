@@ -1,13 +1,11 @@
 # The interactive video renderer (ops I-609): this repo's code, its own private Cloud Run service.
-# Same base as the validator's Dockerfile plus Debian's ffmpeg, which has libx264 (Playwright's own ffmpeg
-# writes only VP9 WebM, which iMessage refuses).
+# Same base and browser as the validator's Dockerfile plus Debian's ffmpeg, which has libx264 (Playwright's
+# own ffmpeg writes only VP9 WebM, which iMessage refuses).
 # The same image runs the interactive layout checker (ops I-610) as a service of its own, with its own entry
 # point: Cloud Run `--command node --args check-server.mjs`.
 FROM node:24.22.1-slim
 
 WORKDIR /app
-
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg \
@@ -15,11 +13,16 @@ RUN apt-get update \
 
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
-RUN npx playwright install --with-deps chromium
+# Chromium's system libraries and fonts, without Playwright's own browser download
+RUN npx playwright install-deps chromium
+
+# Google Chrome stable at a pinned build (ops I-1114); guarded-browser.mjs launches it
+COPY install-chrome.sh /tmp/install-chrome.sh
+RUN sh /tmp/install-chrome.sh && rm /tmp/install-chrome.sh
 
 COPY . .
 
-# Chromium's sandbox refuses root (guarded-browser.mjs); needs Cloud Run's second-generation environment.
+# Chrome's sandbox refuses root (guarded-browser.mjs); needs Cloud Run's second-generation environment.
 USER node
 
 EXPOSE 3002

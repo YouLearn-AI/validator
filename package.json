@@ -7,8 +7,7 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "NODE_ENV=development node server.mjs",
-    "test": "node --test test/",
-    "postinstall": "npx playwright install chromium"
+    "test": "node --test test/"
   },
   "repository": {
     "type": "git",

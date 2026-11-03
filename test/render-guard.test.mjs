@@ -338,7 +338,11 @@ describe('/render-screenshot', { timeout: 120_000 }, () => {
   test('an upstream status Node cannot forward gives a 502, not a crash', async () => {
     const base = await startApp();
     const first = await post(base, { url: `http://bad.test:${badPort}/` }, { 'x-api-key': KEY });
-    assert.equal(first.status, 200);
+    // The proxy answers the page's request with an empty 502. Chrome shows its own error page for an error status
+    // with an empty body (net::ERR_HTTP_RESPONSE_CODE_FAILURE), so the render fails with the fixed answer; the
+    // headless shell before (ops I-1114) took a screenshot of the empty page instead.
+    assert.equal(first.status, 500);
+    assert.equal(first.json.error, 'Screenshot rendering failed');
     // The proxy and the service are still up.
     const next = await post(base, { url: `http://public.test:${originPort}/` }, { 'x-api-key': KEY });
     assert.equal(next.status, 200);
@@ -477,5 +481,26 @@ describe('/render-screenshot', { timeout: 120_000 }, () => {
     assert.equal(browser.sandbox, true);
     const proxy = await browser.egressProxy();
     assert.ok(proxy.refusals() > 0);
+  });
+
+  test('the browser is Google Chrome stable, not Playwright\'s own Chromium (I-1114)', async () => {
+    const seen = [];
+    for (const killable of [false, true]) {
+      const guarded = new GuardedBrowser({
+        log: guardLog.log,
+        killable,
+        launchBrowser: async (options) => { seen.push(options); throw new Error('not launched'); },
+        launchServer: async (options) => { seen.push(options); throw new Error('not launched'); },
+      });
+      await assert.rejects(guarded.browser(), /not launched/);
+      await guarded.close();
+    }
+    assert.equal(seen.length, 2);
+    for (const options of seen) {
+      assert.equal(options.channel, 'chrome');
+      assert.equal(options.headless, true);
+      assert.equal(options.chromiumSandbox, true);
+      assert.match(options.proxy.server, /^http:\/\/127\.0\.0\.1:\d+$/);
+    }
   });
 });

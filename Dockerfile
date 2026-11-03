@@ -2,23 +2,24 @@ FROM node:24.22.1-slim
 
 WORKDIR /app
 
-# Browsers in a shared path that the non-root user below can read
-# (the default, /root/.cache/ms-playwright, is root's own).
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-
 # Copy dependency files
 COPY package.json package-lock.json ./
 
-# Install Node.js dependencies (skip postinstall — we install Playwright manually below)
+# Install Node.js dependencies (skip postinstall)
 RUN npm ci --ignore-scripts
 
-# Install Playwright Chromium binary AND its required system libraries (libnss3, libatk, etc.)
-RUN npx playwright install --with-deps chromium
+# The system libraries and fonts Playwright's Chromium needs (libnss3, libatk, emoji and CJK fonts, etc.),
+# without Playwright's own browser download
+RUN npx playwright install-deps chromium
+
+# The browser: Google Chrome stable at a pinned build (ops I-1114); guarded-browser.mjs launches it
+COPY install-chrome.sh /tmp/install-chrome.sh
+RUN sh /tmp/install-chrome.sh && rm /tmp/install-chrome.sh
 
 # Copy application code
 COPY . .
 
-# Chromium's sandbox is on (guarded-browser.mjs) and refuses to run as root, so
+# Chrome's sandbox is on (guarded-browser.mjs) and refuses to run as root, so
 # the service runs as the image's unprivileged `node` user (ops I-602). On Linux
 # the sandbox needs user namespaces: Cloud Run's second-generation environment.
 USER node

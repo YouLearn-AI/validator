@@ -1,5 +1,9 @@
 // One headless Chromium for renders of untrusted pages (ops I-602).
 //
+// - The browser is Google Chrome stable (BROWSER_CHANNEL), at the build
+//   install-chrome.sh pins in both images, not Playwright's own Chromium,
+//   which lagged Chrome's security fixes (ops I-1114). Chrome runs in its
+//   headless mode; Playwright's Chromium ran as its headless shell.
 // - The Chromium sandbox is on (Playwright passes --no-sandbox unless
 //   chromiumSandbox is true). On Linux it needs a non-root user and user
 //   namespaces: the Dockerfile runs as `node`, and Cloud Run's second-generation
@@ -16,6 +20,9 @@
 
 import { chromium } from 'playwright';
 import { startEgressProxy } from './egress-guard.mjs';
+
+// Playwright's name for Google Chrome stable: /opt/google/chrome/chrome on Linux, Google Chrome.app on a Mac.
+export const BROWSER_CHANNEL = 'chrome';
 
 export const CHROMIUM_ARGS = [
   '--disable-dev-shm-usage',
@@ -92,6 +99,7 @@ export class GuardedBrowser {
     const proxy = await this.egressProxy();
     if (!this.sandbox) this.log.warn('[RENDER_SANDBOX] off: CHROMIUM_SANDBOX=off, Chromium runs without its sandbox');
     const options = {
+      channel: BROWSER_CHANNEL,
       headless: true,
       chromiumSandbox: this.sandbox,
       args: CHROMIUM_ARGS,
