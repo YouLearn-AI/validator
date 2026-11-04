@@ -2,6 +2,10 @@ FROM node:24.22.1-slim
 
 WORKDIR /app
 
+# Debian's packages over HTTPS, with the fixed apt, before the first apt-get (ops I-1152)
+COPY apt-https.sh /tmp/apt-https.sh
+RUN sh /tmp/apt-https.sh && rm /tmp/apt-https.sh
+
 # Copy dependency files
 COPY package.json package-lock.json ./
 
