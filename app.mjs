@@ -6,6 +6,10 @@ import { UrlRefused } from './egress-guard.mjs';
 import { renderAuth, validateAuthSettings } from './render-auth.mjs';
 import { errorCode, jsonErrorHandler } from './request-errors.mjs';
 
+// JSON body limits: /render-screenshot takes inline HTML up to 2 MB, every other route 256 KB.
+const DEFAULT_BODY_LIMIT = '256kb';
+const RENDER_BODY_LIMIT = '2mb';
+
 /**
  * The validator's Express app. server.mjs listens with the defaults; tests pass
  * their own renderer and key settings.
@@ -21,15 +25,18 @@ export function createApp({
   // The shared key is checked first, before any body is read (render-auth.mjs):
   // /render-screenshot (ops I-602), and the validate routes, whose scans cost CPU
   // in proportion to a crafted body (ops I-743). /health stays open.
-  app.post('/render-screenshot', auth);
-  app.post('/validate/mermaid', validateAuth);
-  app.post('/validate/latex', validateAuth);
-
-  // Default limit for most endpoints
+  // /render-screenshot then reads its own body, inline HTML up to RENDER_BODY_LIMIT, before
+  // the default parser below; that parser skips a body already read. Read after it, the
+  // larger limit never applied: inline HTML over 256 KB got 413 (ops I-629).
   // inflate: false refuses compressed request bodies (415) instead of decompressing them:
   // Node's Brotli decoder has a remote-code-execution bug (CVE-2026-111497, fixed in
   // 24.22.1), and no client needs to send compressed JSON here (ops I-543).
-  app.use(express.json({ limit: '256kb', inflate: false }));
+  app.post('/render-screenshot', auth, express.json({ limit: RENDER_BODY_LIMIT, inflate: false }));
+  app.post('/validate/mermaid', validateAuth);
+  app.post('/validate/latex', validateAuth);
+
+  // The default limit, for every other route.
+  app.use(express.json({ limit: DEFAULT_BODY_LIMIT, inflate: false }));
 
   // Health check
   app.get('/health', (_req, res) => {
@@ -84,9 +91,8 @@ export function createApp({
     }
   });
 
-  // Render URL/HTML and capture screenshot
-  // Uses larger body limit since content can be substantial
-  app.post('/render-screenshot', express.json({ limit: '2mb', inflate: false }), async (req, res) => {
+  // Render URL/HTML and capture screenshot. Its body was read with the key check above.
+  app.post('/render-screenshot', async (req, res) => {
     const { html, url, width, height, format, quality, scale } = req.body;
 
     const hasHtml = typeof html === 'string' && html.trim().length > 0;
