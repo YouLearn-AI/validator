@@ -69,6 +69,14 @@ describe('JSON body limits', () => {
     assert.equal(rendered.length, before);
   });
 
+  test('/render-screenshot answers malformed JSON under 2 MB with 400, as any body within its limit', async () => {
+    const before = rendered.length;
+    const { status, json } = await send('/render-screenshot', `{"html": "${'x'.repeat(300 * KB)}`);
+    assert.equal(status, 400);
+    assert.equal(json.code, 'malformed_json');
+    assert.equal(rendered.length, before);
+  });
+
   test('/render-screenshot checks the key before it reads a large body', async () => {
     const { status, json } = await send('/render-screenshot', bodyOf(3 * MB, 'html'), { key: '' });
     assert.equal(status, 401);
