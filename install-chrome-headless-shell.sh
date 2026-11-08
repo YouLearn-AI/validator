@@ -1,18 +1,22 @@
 #!/bin/sh
 # Installs Chrome for Testing's headless shell at a pinned build, for both images (Dockerfile, Dockerfile.video).
-# It is the browser Playwright itself downloads for headless Chromium, at a newer Chrome build (ops I-1114):
-# Playwright 1.64.1's own, 156.0.8078.4, lacks the fixes Chrome 156.0.8078.73 shipped for four Critical CVEs,
-# one of them a sandbox escape, and no stable Playwright bundles a newer one yet. The Dockerfiles point
-# guarded-browser.mjs at it (CHROMIUM_EXECUTABLE_PATH).
+# It is the browser Playwright itself downloads for headless Chromium, at Chrome's current Stable build instead
+# of the one Playwright bundles (ops I-1114): Playwright 1.64.1's own, 156.0.8078.4, lacks the fixes Chrome
+# 156.0.8078.73 shipped for four Critical CVEs, one of them a sandbox escape. Chrome 157.0.8103.38 adds 213
+# security fixes, 7 of them Critical (ops I-1343). The Dockerfiles point guarded-browser.mjs at it
+# (CHROMIUM_EXECUTABLE_PATH).
 #
-# To update: take a version from
-# https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json (the Stable
-# channel's, on the major this Playwright supports), download its linux64 chrome-headless-shell zip and set the
-# SHA-256 here. Check the download against the bucket's own MD5 first (`curl -I` gives x-goog-hash md5=...).
+# To update: take the Stable channel's version from
+# https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json, download its
+# linux64 chrome-headless-shell zip and set the SHA-256 here. Check the download against the bucket's own MD5
+# first (`curl -I` gives x-goog-hash md5=...). When that Stable is a newer major than the Chromium this Playwright
+# bundles (node_modules/playwright-core/browsers.json), run the test suite against the same version first, with
+# CHROMIUM_EXECUTABLE_PATH set to Chrome for Testing's headless shell for your platform (ops I-1343: Playwright
+# 1.64.1 bundles 156 and passes on 157.0.8103.38).
 set -eu
 
-VERSION=156.0.8078.80
-SHA256=547dcd374e02961bf998f6046a267644f8502225c36bb78ca307dab32a0b3eb4
+VERSION=157.0.8103.38
+SHA256=deafffa74660b34853a4119c361fd427ac8c9fcb62db51ddb8a797cd83a4ba2d
 
 zip=/tmp/chrome-headless-shell-linux64.zip
 apt-get update
