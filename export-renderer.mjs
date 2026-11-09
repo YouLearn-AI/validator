@@ -11,7 +11,9 @@
 //
 // What the page may reach is only what a print needs. In the browser (exportRequestAllowed): any request to the
 // print page's own origin (its scripts, styles, fonts), and images over HTTPS on port 443; every other request is
-// aborted and WebSockets are closed. Under that, the GuardedBrowser (guarded-browser.mjs) keeps the sandbox on
+// aborted and WebSockets are closed. Playwright sends a redirect's next hop on without asking the route again, so
+// every request but an image is fetched by the renderer through the same guard and a redirect is refused: a
+// request to the print page's origin is never sent on to another origin. Under that, the GuardedBrowser (guarded-browser.mjs) keeps the sandbox on
 // and sends every request through the egress guard, which the export service runs HTTPS-only: public addresses on
 // port 443, never an internal one. The context has no cookies: the page is signed in as nobody. One render at a
 // time per instance; a hard deadline ends a render that runs too long. Logs hold codes, counts and times only,
@@ -42,6 +44,8 @@ const FOOTER = '<div style="width:100%;font-size:8px;color:#666;text-align:cente
 // A language tag as the web app names its locales (en, pt-BR, zh-CN): the only caller text in the page's URL.
 const LANGUAGE_TAG = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+// The statuses a browser follows to a Location: refused for anything but an image (createExportRenderer).
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 /** The language tag to print in: `language` when it is a tag, else English. */
 export function languageTag(language) {
@@ -170,13 +174,31 @@ export function createExportRenderer(guardedBrowser, { printUrl, options = {}, l
         }
         context = opened;
         await context.routeWebSocket(/.*/, (ws) => ws.close());
-        await context.route('**/*', (route) => {
+        await context.route('**/*', async (route) => {
           const request = route.request();
-          if (exportRequestAllowed({ url: request.url(), resourceType: request.resourceType() }, allowedOrigin)) {
-            return route.continue();
+          const resourceType = request.resourceType();
+          if (!exportRequestAllowed({ url: request.url(), resourceType }, allowedOrigin)) {
+            blocked += 1;
+            return route.abort('blockedbyclient').catch(() => {});
           }
-          blocked += 1;
-          return route.abort('blockedbyclient');
+          // An image follows its redirects in the browser: each hop is still an image, and the egress guard checks
+          // each hop's address. Playwright sends a redirect's next hop on without calling this handler, so every
+          // other request is fetched here (through the same egress guard) with no redirect followed: a request from
+          // the print page's origin can never be sent on to another origin.
+          if (resourceType === 'image') return route.continue().catch(() => {});
+          let response;
+          try {
+            // maxRedirects 0: a redirect comes back as it is, never followed.
+            response = await route.fetch({ maxRedirects: 0, timeout: o.gotoTimeoutMs });
+          } catch {
+            // The guard refused it, it timed out, or the render ended.
+            return route.abort('failed').catch(() => {});
+          }
+          if (REDIRECT_STATUSES.has(response.status())) {
+            blocked += 1;
+            return route.abort('blockedbyclient').catch(() => {});
+          }
+          return route.fulfill({ response }).catch(() => {});
         });
         const page = await context.newPage();
         stage = 'load';

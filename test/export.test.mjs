@@ -396,6 +396,25 @@ function probePage(secretPort) {
   </script></body></html>`;
 }
 
+// A print page whose own-origin requests (a script, a fetch, an image) answer with a redirect to somewhere a print
+// may not go: an outside site over HTTPS on 443, and another loopback port. It reports what each attempt saw.
+const REDIRECT_PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body><main id="doc"></main><script>
+  const settle = (el, src) => new Promise((resolve) => {
+    el.onload = () => resolve('reached'); el.onerror = () => resolve('refused'); el.src = src;
+    if (el.tagName === 'SCRIPT') document.head.append(el);
+  });
+  window.__youlearnExportRender = async (doc) => {
+    document.getElementById('doc').textContent = doc.outputs[0].chunks[0].content;
+    const results = {
+      script: await settle(document.createElement('script'), '/go-out.js'),
+      fetched: await fetch('/go-out-fetch').then(() => 'reached', () => 'refused'),
+      image: await settle(new Image(), '/img-out.png'),
+    };
+    await fetch('/probe-results', { method: 'POST', body: JSON.stringify(results) });
+    return { diagrams: 0, imagesFailed: 0 };
+  };
+</script></body></html>`;
+
 describe('export renderer in Chromium', { timeout: 180_000 }, () => {
   let browser;
   let page;
@@ -430,7 +449,14 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
         res.setHeader('content-type', types[path.extname(file)] || 'application/octet-stream');
         return res.end(fs.readFileSync(file));
       }
+      const redirects = {
+        '/go-out.js': 'https://outside.test/evil.js',
+        '/go-out-fetch': 'https://outside.test/collect',
+        '/img-out.png': `http://127.0.0.1:${secretPort}/leak.png`,
+      };
+      if (redirects[req.url]) return res.writeHead(302, { location: redirects[req.url] }).end();
       res.setHeader('content-type', 'text/html; charset=utf-8');
+      if (req.url.startsWith('/redirect/')) return res.end(REDIRECT_PAGE);
       if (req.url.startsWith('/probe/')) return res.end(probePage(secretPort));
       if (req.url.startsWith('/hang/')) return undefined; // never answers
       return res.end(PRINT_PAGE);
@@ -551,6 +577,33 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
       assert.ok(refusals.some((l) => l.includes(`reason=${reason}`)), `${reason}: ${refusals.join('\n')}`);
     }
     assert.ok(refusals.every((l) => l.endsWith('host=-')));
+  });
+
+  test('a request from the print page origin is never redirected to another origin', async () => {
+    const { log } = collectingLog();
+    const doc = { ...DOC, outputs: [{ kind: 'answer', chunks: [{ type: 'response', content: 'redirects' }] }] };
+    const before = { ...outside.seen };
+    const hits = secretHits;
+    const result = await renderer('/redirect', log)(doc);
+    assert.equal(result.pdf.subarray(0, 5).toString(), '%PDF-');
+    for (const asked of ['/go-out.js', '/go-out-fetch', '/img-out.png']) assert.ok(requested.includes(asked), asked);
+    // The script and the fetch are fetched with no redirect followed; the image's redirect is followed by the
+    // browser and refused by the egress guard (plain http to another loopback port).
+    assert.deepEqual(probeResults, { script: 'refused', fetched: 'refused', image: 'refused' });
+    assert.equal(result.blocked, 2, 'the script and fetch redirects are counted as blocked');
+    assert.equal(outside.seen.connections, before.connections, 'a redirect reached an outside site');
+    assert.equal(secretHits, hits, 'a redirect reached another loopback port');
+  });
+
+  test('the print page and its own requests go through the egress guard too', async () => {
+    // A print page on a loopback port the guard does not trust: fetched by the renderer, it must still be refused.
+    const { log } = collectingLog();
+    const hits = secretHits;
+    const untrusted = createExportRenderer(browser, {
+      printUrl: `http://127.0.0.1:${secretPort}/export-print`, log, options: { gotoTimeoutMs: 1500 },
+    });
+    await assert.rejects(untrusted(DOC), (e) => e instanceof ExportFailed && e.stage === 'load');
+    assert.equal(secretHits, hits);
   });
 
   test('a second export while one runs is ExportBusy; the deadline is ExportTimeout and frees the renderer', async () => {
