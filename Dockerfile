@@ -9,8 +9,9 @@ RUN sh /tmp/apt-https.sh && rm /tmp/apt-https.sh
 # Copy dependency files
 COPY package.json package-lock.json ./
 
-# Install Node.js dependencies (skip postinstall: no Playwright browser download)
-RUN npm ci --ignore-scripts
+# Install Node.js dependencies (skip postinstall: no Playwright browser download). Dev dependencies stay out:
+# pdfjs-dist only reads the export tests' PDFs (ops I-1313).
+RUN npm ci --ignore-scripts --omit=dev
 
 # The system libraries and fonts Playwright's Chromium needs (libnss3, libatk, emoji and CJK fonts, etc.)
 RUN npx playwright install-deps chromium
