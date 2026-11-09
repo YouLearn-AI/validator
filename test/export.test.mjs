@@ -20,7 +20,9 @@ import { strFromU8, unzipSync } from 'fflate';
 import { GuardedBrowser } from '../guarded-browser.mjs';
 import { startEgressProxy, trustedOriginKeys } from '../egress-guard.mjs';
 import { createExportApp, documentProblem } from '../export-app.mjs';
-import { DOCX_MAGIC, DOCX_TYPE, WordConverter, WordFailed } from '../export-docx.mjs';
+import {
+  DOCX_MAGIC, DOCX_TYPE, rightToLeftTables, WordConverter, WordFailed,
+} from '../export-docx.mjs';
 import {
   createExportRenderer, exportRequestAllowed, ExportBusy, ExportFailed, ExportTimeout, printOrigin, printPageUrl,
 } from '../export-renderer.mjs';
@@ -682,6 +684,7 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     assert.ok(xml.includes('<m:f>') && xml.includes('<m:rad>'), 'fraction and root');
     // A table stays a table, with a grid as the chat draws it; a list a list, a heading a heading, code its text.
     assert.equal((xml.match(/<w:tbl>/g) || []).length, 1);
+    assert.ok(!xml.includes('<w:bidiVisual'), 'an English table stays left to right');
     const styles = strFromU8(unzipSync(new Uint8Array(result.file))['word/styles.xml']);
     const tableStyle = styles.slice(styles.indexOf('w:styleId="Table"'));
     assert.match(tableStyle.slice(0, tableStyle.indexOf('</w:style>')), /<w:tblBorders>\s*<w:top [^>]*w:val="single"/);
@@ -711,12 +714,21 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
         chunks: [
           { type: 'response', content: [...ARABIC, 'Mitochondria make ATP.'].join('\n\n') },
           { type: 'fixture-html', content: '<ol dir="auto"><li>النواة</li><li>الغشاء</li></ol>' },
+          {
+            type: 'fixture-html',
+            content: '<div dir="auto"><table><thead><tr><th>العضية</th><th>الوظيفة</th></tr></thead>'
+              + '<tbody><tr><td>النواة</td><td>تحمل المادة الوراثية</td></tr></tbody></table></div>',
+          },
         ],
       }],
     };
     const result = await renderer('/export-print', log)(doc, 'docx');
-    const paragraphs = docxParagraphs(docxParts(result.file).xml);
+    const { xml } = docxParts(result.file);
+    const paragraphs = docxParagraphs(xml);
     const find = (text) => paragraphs.find((p) => paragraphText(p) === text);
+    // The Arabic table lays its columns out right to left, as the page does (pandoc alone does not, jgm/pandoc#7695).
+    const [table] = xml.match(/<w:tbl>[\s\S]*?<\/w:tbl>/) || [];
+    assert.ok(table && table.split('</w:tblPr>')[0].includes('<w:bidiVisual />'), 'the Arabic table is right to left');
     // The title too: the page sets it dir="auto", which pandoc keeps on a heading unless the file says rtl.
     for (const paragraph of ['الخلية', ...ARABIC, 'النواة', 'الغشاء']) {
       const found = find(paragraph);
@@ -811,5 +823,30 @@ describe('WordConverter (pandoc in a worker thread)', { timeout: 60_000 }, () =>
     } finally {
       await word.close();
     }
+  });
+});
+
+describe('rightToLeftTables', () => {
+  const cell = (text, rtl) => `<w:tc><w:p>${rtl ? '<w:pPr><w:bidi /></w:pPr>' : ''}<w:r><w:t>${text}</w:t></w:r></w:p></w:tc>`;
+  const table = (cells) => `<w:tbl><w:tblPr><w:tblStyle w:val="Table" /><w:tblW w:type="pct" w:w="5000" /></w:tblPr>`
+    + `<w:tr>${cells.join('')}</w:tr></w:tbl>`;
+
+  test('a table whose paragraphs are mostly right to left is laid out right to left, after its style', () => {
+    const xml = table([cell('النواة', true), cell('ATP', false), cell('الغشاء', true)]);
+    assert.equal(rightToLeftTables(xml), xml.replace('<w:tblStyle w:val="Table" />', '<w:tblStyle w:val="Table" /><w:bidiVisual />'));
+  });
+
+  test('a left-to-right table, half and half, or one with no text is left as it is', () => {
+    for (const xml of [table([cell('Nucleus', false)]), table([cell('النواة', true), cell('ATP', false)]), table([])]) {
+      assert.equal(rightToLeftTables(xml), xml);
+    }
+  });
+
+  test('each table is judged on its own; a cell\'s text can\'t open a table', () => {
+    const arabic = table([cell('النواة', true)]);
+    const english = table([cell('&lt;w:tbl&gt; Nucleus', false)]);
+    const out = rightToLeftTables(`<w:body>${english}${arabic}</w:body>`);
+    assert.equal((out.match(/<w:bidiVisual \/>/g) || []).length, 1);
+    assert.ok(out.indexOf('<w:bidiVisual />') > out.indexOf('النواة') - 200 && out.startsWith(`<w:body>${english}`));
   });
 });

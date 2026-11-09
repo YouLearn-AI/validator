@@ -12,6 +12,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 for (const method of ['log', 'info', 'warn', 'error', 'debug']) console[method] = () => {};
 
 const { convert } = await import('pandoc-wasm');
+const { rightToLeftTables } = await import('./export-docx.mjs');
 
 const OUTPUT = 'export.docx';
 // Not "reference.docx": pandoc reads a file of that name in its data folder as the reference document by itself,
@@ -36,6 +37,16 @@ async function referenceDoc() {
 }
 const reference = referenceDoc().catch(() => null);
 
+/** The .docx with its right-to-left tables laid out right to left (export-docx.mjs rightToLeftTables). */
+function withRightToLeftTables(bytes) {
+  const files = unzipSync(bytes);
+  const xml = strFromU8(files['word/document.xml']);
+  const marked = rightToLeftTables(xml);
+  if (marked === xml) return bytes;
+  files['word/document.xml'] = strToU8(marked);
+  return zipSync(files);
+}
+
 parentPort.on('message', async ({ id, html, images, metadata }) => {
   try {
     const files = Object.fromEntries(images.map(({ name, bytes }) => [name, new Blob([bytes])]));
@@ -51,7 +62,7 @@ parentPort.on('message', async ({ id, html, images, metadata }) => {
       parentPort.postMessage({ id, code: 'no_output' });
       return;
     }
-    const bytes = new Uint8Array(await docx.arrayBuffer());
+    const bytes = withRightToLeftTables(new Uint8Array(await docx.arrayBuffer()));
     // How many images pandoc could not load: each is left out of the file, so the caller counts them.
     const missing = (result.warnings || []).filter((w) => w?.type === 'CouldNotFetchResource').length;
     parentPort.postMessage({ id, bytes, missing }, [bytes.buffer]);

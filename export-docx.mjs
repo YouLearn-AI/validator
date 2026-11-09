@@ -8,7 +8,8 @@
 //      paragraphs and runs from that).
 //   2. The renderer captures each marked picture as a PNG from the page (wordPictures).
 //   3. A WordConverter turns HTML and pictures into a .docx with pandoc (export-docx-worker.mjs), in a worker
-//      thread that is terminated when the render's deadline passes. Its tables get a thin grid, as the chat's do.
+//      thread that is terminated when the render's deadline passes. Its tables get a thin grid, as the chat's do,
+//      and a right-to-left table lays its columns out right to left (rightToLeftTables).
 // Nothing here parses the answer's text: the page draws it with the chat's components, and pandoc reads the
 // page's HTML. Logs hold codes, counts and times only.
 
@@ -208,6 +209,37 @@ export async function wordPictures(page, pictures, timeout) {
     captured.push({ name, bytes });
   }
   return captured;
+}
+
+/**
+ * pandoc writes no right-to-left layout for a table (jgm/pandoc#7695: its columns run left to right in Word, though
+ * each cell's text is right to left). This gives each table of word/document.xml whose paragraphs are mostly right to
+ * left (wordSource set each cell's direction from its own text) the table property that lays its columns out right to
+ * left, <w:bidiVisual />, after its style as OOXML orders them. Only pandoc's own markup is read: a cell's text is
+ * escaped inside <w:t>, so it can't open or close a table.
+ * @param {string} xml word/document.xml as pandoc wrote it
+ * @returns {string} the same, each right-to-left table marked
+ */
+export function rightToLeftTables(xml) {
+  const tables = [];
+  const open = [];
+  for (const match of xml.matchAll(/<w:tbl>|<\/w:tbl>/g)) {
+    if (match[0] === '<w:tbl>') open.push(match.index);
+    else if (open.length) tables.push([open.pop(), match.index]);
+  }
+  const marks = [];
+  for (const [start, end] of tables) {
+    const paragraphs = xml.slice(start, end).split(/(?=<w:p>|<w:p )/).slice(1).filter((p) => p.includes('<w:t'));
+    const rtl = paragraphs.filter((p) => /<w:bidi\s*\/>/.test(p.split('</w:pPr>')[0])).length;
+    if (!paragraphs.length || rtl * 2 <= paragraphs.length) continue;
+    const props = xml.indexOf('<w:tblPr>', start);
+    if (props < 0 || props > end) continue;
+    const style = /^<w:tblStyle [^>]*\/>/.exec(xml.slice(props + '<w:tblPr>'.length));
+    marks.push(props + '<w:tblPr>'.length + (style ? style[0].length : 0));
+  }
+  let out = xml;
+  for (const at of marks.sort((a, b) => b - a)) out = `${out.slice(0, at)}<w:bidiVisual />${out.slice(at)}`;
+  return out;
 }
 
 const WORKER_URL = new URL('./export-docx-worker.mjs', import.meta.url);
