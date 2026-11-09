@@ -182,17 +182,37 @@ function pinnedLookup(addresses) {
   };
 }
 
+/**
+ * The exact origins a proxy lets through without the address check, as "host:port" keys. Only the export
+ * service passes one: its own print page when that page is on this machine (local development,
+ * export-server.mjs). One host and one port each, never a range or a scheme: every other port on that host,
+ * and every other address, is checked as usual. Production passes none (its print page is a public address).
+ * @param {Iterable<{ host: string, port: number }>} origins
+ * @returns {Set<string>}
+ */
+export function trustedOriginKeys(origins = []) {
+  return new Set([...origins].map(({ host, port }) => originKey(host, port)));
+}
+
+function originKey(host, port) {
+  return `${String(host).toLowerCase().replace(/^\[|\]$/g, '')}:${Number(port)}`;
+}
+
 // Connect to one of the checked addresses (Node tries each in turn, both
 // families, as Chromium would), then check the address the socket reached
-// before any byte is sent.
-async function connectChecked(host, port, { lookup, connect, log, logHosts }) {
-  const addresses = await publicAddresses(host, { lookup, log, logHosts });
-  const socket = connect({
-    host: net.isIP(host) ? host : host.replace(/^\[|\]$/g, ''),
-    port,
-    lookup: pinnedLookup(addresses),
-    autoSelectFamily: true,
-  });
+// before any byte is sent. A trusted origin (trustedOriginKeys) is connected
+// as named, with no check.
+async function connectChecked(host, port, { lookup, connect, log, logHosts, trusted }) {
+  const bare = net.isIP(host) ? host : host.replace(/^\[|\]$/g, '');
+  const isTrusted = trusted.has(originKey(host, port));
+  const socket = isTrusted
+    ? connect({ host: bare, port, autoSelectFamily: true })
+    : connect({
+      host: bare,
+      port,
+      lookup: pinnedLookup(await publicAddresses(host, { lookup, log, logHosts })),
+      autoSelectFamily: true,
+    });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       socket.destroy();
@@ -208,7 +228,7 @@ async function connectChecked(host, port, { lookup, connect, log, logHosts }) {
     });
   });
   const peer = socket.remoteAddress;
-  const reason = peer === undefined ? 'no_peer' : addressRefusal(peer);
+  const reason = isTrusted ? null : (peer === undefined ? 'no_peer' : addressRefusal(peer));
   if (reason) {
     socket.destroy();
     throw refuse(reason, host, log, logHosts);
@@ -238,13 +258,15 @@ function statusFor(error) {
  * absolute-form requests for http:// and CONNECT for https:// and WebSockets.
  * `lookup` and `connect` exist for tests (a fake public name, a local server);
  * production uses the system resolver and net.connect. `logHosts` false leaves
- * the host out of every refusal line.
+ * the host out of every refusal line. `trusted`: exact origins let through
+ * without the address check (trustedOriginKeys; the export service's local
+ * print page only).
  * @returns {Promise<{ server: http.Server, url: string, port: number, refusals: () => number, close: () => Promise<void> }>}
  */
 export async function startEgressProxy({
-  lookup = defaultLookup, connect = defaultConnect, log = console, logHosts = true,
+  lookup = defaultLookup, connect = defaultConnect, log = console, logHosts = true, trusted = [],
 } = {}) {
-  const deps = { lookup, connect, log, logHosts };
+  const deps = { lookup, connect, log, logHosts, trusted: trustedOriginKeys(trusted) };
   let refusals = 0;
   const counted = (error) => {
     if (error instanceof UrlRefused) refusals += 1;
