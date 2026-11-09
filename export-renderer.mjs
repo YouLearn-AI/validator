@@ -163,14 +163,17 @@ export function createExportRenderer(guardedBrowser, { printUrl, word = null, op
     if (busy) throw new ExportBusy();
     busy = true;
     const t0 = Date.now();
+    const deadlineAt = t0 + o.deadlineMs;
     const warm = guardedBrowser.running();
     const language = languageTag(doc.language);
     let stage = 'launch';
     let context = null;
     // Requests the page made that a print does not need (exportRequestAllowed), aborted in the browser.
     let blocked = 0;
-    // Set when the render ends (the deadline included): a context that opens after that is closed at once.
+    // Set when the render ends (the deadline included): a context that opens after that is closed at once, and a
+    // Word conversion that has not started never starts.
     let ended = false;
+    let succeeded = false;
     let timer;
     const expired = new Promise((_, reject) => {
       timer = setTimeout(() => reject(new ExportTimeout(o.deadlineMs)), o.deadlineMs);
@@ -243,13 +246,14 @@ export function createExportRenderer(guardedBrowser, { printUrl, word = null, op
         }
         stage = format === 'docx' ? 'word' : 'print';
         const made = format === 'docx'
-          ? await wordFile(page, language, Math.max(1, o.deadlineMs - (Date.now() - t0)))
+          ? await wordFile(page, language, () => (ended ? 0 : deadlineAt - Date.now()))
           : { file: await printPdf(page), left: 0 };
         if (made.file.length > o.maxBytes) throw new ExportFailed(stage, 'too_large');
         return { file: made.file, diagrams: drawn.diagrams, imagesFailed: drawn.imagesFailed + made.left };
       })();
       work.catch(() => {});
       const result = await Promise.race([work, expired]);
+      succeeded = true;
       const ms = Date.now() - t0;
       log.info(`[EXPORT] ok format=${format} outputs=${doc.outputs.length} diagrams=${result.diagrams} `
         + `images_failed=${result.imagesFailed} blocked=${blocked} bytes=${result.file.length} warm=${warm} ms=${ms}`);
@@ -276,6 +280,9 @@ export function createExportRenderer(guardedBrowser, { printUrl, word = null, op
         log.warn('[EXPORT] teardown stalled; resetting the browser');
         await guardedBrowser.reset().catch(() => {});
       }
+      // A Word render that failed or passed its deadline may have left its conversion running: it ends with the
+      // worker before the next render can start, so it never runs into the next one's time.
+      if (!succeeded && format === 'docx' && word) await word.close();
       busy = false;
     }
   };
@@ -291,8 +298,9 @@ export function createExportRenderer(guardedBrowser, { printUrl, word = null, op
     });
   }
 
-  /** The drawn page as a Word file in `language`, within `timeoutMs`; `left`: pictures left out of it. */
-  async function wordFile(page, language, timeoutMs) {
+  /** The drawn page as a Word file in `language`, in the time `remaining()` gives (ms, read when the conversion
+   * starts); `left`: pictures left out of it. */
+  async function wordFile(page, language, remaining) {
     if (!word) throw new ExportFailed('word', 'word_unavailable');
     let source;
     try {
@@ -302,7 +310,12 @@ export function createExportRenderer(guardedBrowser, { printUrl, word = null, op
       throw new ExportFailed('word', 'page_failed');
     }
     const pictures = await wordPictures(page, source.pictures, o.gotoTimeoutMs);
-    const { docx, missing } = await word.convert({ html: source.html, pictures, language }, timeoutMs);
+    const timeoutMs = remaining();
+    if (timeoutMs <= 0) throw new ExportTimeout(o.deadlineMs);
+    // The conversion's time is what is left of the render's: running out of it is the render's deadline.
+    const { docx, missing } = await word.convert({ html: source.html, pictures, language }, timeoutMs).catch((error) => {
+      throw error instanceof WordFailed && error.code === 'timeout' ? new ExportTimeout(o.deadlineMs) : error;
+    });
     return { file: docx, left: source.skipped + missing };
   }
 }

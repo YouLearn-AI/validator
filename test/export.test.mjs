@@ -721,6 +721,41 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     assert.ok(find('النواة').includes('<w:numPr>'), 'the list keeps its numbers');
   });
 
+  test('a picture taller than a page goes in as page-sized slices, cut between its parts', async () => {
+    const { log } = collectingLog();
+    const rows = Array.from({ length: 40 }, (_, n) => `<div style="height:72px;border:1px solid #999">Event ${n + 1}</div>`);
+    const doc = {
+      title: 'Timeline',
+      language: 'en',
+      outputs: [{ kind: 'answer', chunks: [{ type: 'fixture-html', content: `<figure>${rows.join('')}</figure>` }] }],
+    };
+    const result = await renderer('/export-print', log)(doc, 'docx');
+    const files = unzipSync(new Uint8Array(result.file));
+    const media = Object.keys(files).filter((name) => name.startsWith('word/media/'));
+    // 40 rows of 74 px at 688 px wide: about 2,960 px, shown 600 wide, so a page (860 px) holds about 986 px of it.
+    assert.ok(media.length >= 3 && media.length <= 5, `${media.length} slices`);
+    for (const name of media) {
+      const png = Buffer.from(files[name]);
+      const [width, height] = [png.readUInt32BE(16), png.readUInt32BE(20)];
+      // Captured at twice the CSS size, never more than a page tall.
+      assert.ok(width <= 688 * 2 && height <= Math.ceil((860 * 688) / 600) * 2, `${name} ${width}x${height}`);
+      // Cut between rows: a slice is a whole number of 74 px rows (each row's border included).
+      assert.equal(Math.round(height / 2) % 74, 0, `${name} cut inside a row: ${height}`);
+    }
+    assert.equal(result.imagesFailed, 0);
+  });
+
+  test('a Word conversion still running at the deadline ends with its worker, before the next render', async () => {
+    const { log } = collectingLog();
+    const hanging = new WordConverter({ workerUrl: new URL('./fixtures/hanging-word-worker.mjs', import.meta.url) });
+    const stuck = createExportRenderer(browser, {
+      printUrl: `http://127.0.0.1:${pagePort}/export-print`, log, word: hanging, options: { deadlineMs: 4000 },
+    });
+    await assert.rejects(stuck(DOC, 'docx'), (e) => e instanceof ExportTimeout);
+    assert.equal(hanging.worker, null, 'the worker was ended');
+    assert.equal(hanging.pending.size, 0, 'no job is left waiting');
+  });
+
   test('a Word render with no converter fails with a code, and makes nothing', async () => {
     const { log } = collectingLog();
     const plain = createExportRenderer(browser, { printUrl: `http://127.0.0.1:${pagePort}/export-print`, log });

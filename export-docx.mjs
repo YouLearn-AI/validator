@@ -20,12 +20,15 @@ export const DOCX_MAGIC = Buffer.from('PK\u0003\u0004', 'latin1');
 
 export const WORD_LIMITS = Object.freeze({
   // A picture's size in the file, in CSS pixels (pandoc reads them at 96 per inch): at most the text width of a
-  // Letter or A4 page with pandoc's 1-inch margins (6.3 in) and its text height (9 in), so a tall timeline fits
-  // on one page.
+  // Letter or A4 page with pandoc's 1-inch margins (6.3 in) and its text height (9 in).
   maxWidth: 600,
   maxHeight: 860,
-  // The most pictures one file captures (each is a screenshot); the rest are left out and counted.
+  // A picture taller than a page at that width (a long timeline) goes in as several pictures, one per page, cut
+  // between its parts where it can be; no capture is larger than a page.
+  // The most captures one file makes, and their total area in CSS pixels (about 40 pages at the print page's
+  // width); the rest are left out and counted.
   maxPictures: 120,
+  maxArea: 688 * 40_000,
   // Pictures are captured at twice their CSS size, so they stay sharp when printed.
   deviceScaleFactor: 2,
 });
@@ -40,16 +43,17 @@ export class WordFailed extends Error {
 
 /**
  * Runs in the print page (page.evaluate) after it drew the document. Returns the drawn document as HTML for
- * pandoc, and the pictures to capture, each marked on the page with data-export-picture="<n>" and named
- * picture-<n>.png in the HTML. Must stay self-contained: Playwright sends its source to the page.
- * @param {{ maxWidth: number, maxHeight: number, maxPictures: number }} limits
- * @returns {{ html: string, pictures: { index: number, name: string }[], skipped: number }}
+ * pandoc, and the captures it names (picture-<n>.png), each a rectangle of the page in document coordinates.
+ * Must stay self-contained: Playwright sends its source to the page.
+ * @param {{ maxWidth: number, maxHeight: number, maxPictures: number, maxArea: number }} limits
+ * @returns {{ html: string, pictures: { name: string, clip: { x: number, y: number, width: number,
+ *   height: number } }[], skipped: number }}
  */
 export function wordSource(limits) {
   const root = document.querySelector('.export-print') || document.body;
   // Right-to-left scripts: Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan, Mandaic, Arabic Extended and their
   // presentation forms.
-  const RTL = /[֐-ࣿיִ-﷿ﹰ-﻿]/u;
+  const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/u;
   const LETTER = /\p{L}/u;
   const PICTURES = 'figure, img, svg, canvas, video, picture';
   const TEXT_BLOCKS = 'p, h1, h2, h3, h4, h5, h6, blockquote, pre';
@@ -80,26 +84,62 @@ export function wordSource(limits) {
     return getComputedStyle(element).direction === 'rtl' ? 'rtl' : 'ltr';
   };
 
-  const pictures = [];
+  /** Where to cut a picture `height` tall into slices of at most `slice`: between its parts where it can. */
+  const cuts = (element, top, height, slice) => {
+    const parts = [...element.querySelectorAll('*')]
+      .map((part) => part.getBoundingClientRect())
+      .filter((box) => box.height > 0 && box.height < slice)
+      .map((box) => [box.top - top, box.bottom - top]);
+    const inside = (y) => parts.some(([a, b]) => a < y - 0.5 && y + 0.5 < b);
+    const ends = [];
+    for (let from = 0; height - from > slice;) {
+      const limit = from + slice;
+      const candidates = parts.flatMap(([a, b]) => [a, b]).filter((y) => y > from + slice / 2 && y <= limit);
+      const cut = Math.floor([limit, ...candidates].filter((y) => !inside(y)).sort((a, b) => b - a)[0] ?? limit);
+      ends.push(cut);
+      from = cut;
+    }
+    ends.push(height);
+    return ends;
+  };
+
+  // Each picture: its captures (one, or one per page for a tall one) and their size in the file.
+  const groups = [];
+  let captures = 0;
+  let area = 0;
   let skipped = 0;
   const picture = (element) => {
     const box = element.getBoundingClientRect();
     if (box.width < 1 || box.height < 1) return;
-    if (pictures.length >= limits.maxPictures) {
+    const scale = Math.min(1, limits.maxWidth / box.width);
+    const slice = limits.maxHeight / scale;
+    const ends = box.height > slice ? cuts(element, box.top, box.height, slice) : [box.height];
+    if (captures + ends.length > limits.maxPictures || area + box.width * box.height > limits.maxArea) {
       skipped += 1;
+      element.setAttribute('data-export-hidden', '');
       return;
     }
-    const scale = Math.min(1, limits.maxWidth / box.width, limits.maxHeight / box.height);
-    const index = pictures.length;
-    element.setAttribute('data-export-picture', String(index));
-    element.setAttribute('data-export-size', `${Math.round(box.width * scale)}x${Math.round(box.height * scale)}`);
-    pictures.push({ index, name: `picture-${index}.png` });
+    const x = box.left + window.scrollX;
+    const y = box.top + window.scrollY;
+    const slices = ends.map((end, n) => {
+      const from = n ? ends[n - 1] : 0;
+      captures += 1;
+      return {
+        name: `picture-${captures - 1}.png`,
+        clip: { x, y: y + from, width: box.width, height: end - from },
+        size: [Math.round(box.width * scale), Math.round((end - from) * scale)],
+      };
+    });
+    area += box.width * box.height;
+    element.setAttribute('data-export-picture', String(groups.length));
+    groups.push(slices);
   };
   for (const formula of formulas) {
     if (!formula.querySelector('math')) picture(formula);
   }
   for (const element of root.querySelectorAll(PICTURES)) {
-    if (element.closest('[data-export-hidden], .katex') || element.parentElement?.closest(PICTURES)) continue;
+    if (element.closest('[data-export-hidden], [data-export-picture], .katex')) continue;
+    if (element.parentElement?.closest(PICTURES)) continue;
     picture(element);
   }
   for (const block of root.querySelectorAll(`${TEXT_BLOCKS}, ${TEXT_CELLS}`)) {
@@ -110,18 +150,23 @@ export function wordSource(limits) {
 
   const copy = root.cloneNode(true);
   for (const element of root.querySelectorAll('[data-export-hidden], [data-export-picture], [data-export-dir]')) {
-    element.removeAttribute('data-export-hidden');
-    element.removeAttribute('data-export-dir');
+    for (const name of ['data-export-hidden', 'data-export-picture', 'data-export-dir']) element.removeAttribute(name);
   }
   copy.querySelectorAll('[data-export-hidden], script, style, link, noscript, template, button').forEach((e) => e.remove());
   for (const marked of copy.querySelectorAll('[data-export-picture]')) {
-    const [width, height] = marked.getAttribute('data-export-size').split('x');
-    const img = document.createElement('img');
-    img.setAttribute('src', `picture-${marked.getAttribute('data-export-picture')}.png`);
-    img.setAttribute('width', width);
-    img.setAttribute('height', height);
-    img.setAttribute('alt', '');
-    marked.replaceWith(img);
+    const images = groups[Number(marked.getAttribute('data-export-picture'))].map(({ name, size }) => {
+      const img = document.createElement('img');
+      img.setAttribute('src', name);
+      img.setAttribute('width', String(size[0]));
+      img.setAttribute('height', String(size[1]));
+      img.setAttribute('alt', '');
+      if (groups[Number(marked.getAttribute('data-export-picture'))].length === 1) return img;
+      // Slices of one picture, each in its own paragraph: they stack, a page each.
+      const paragraph = document.createElement('p');
+      paragraph.append(img);
+      return paragraph;
+    });
+    marked.replaceWith(...images);
   }
   for (const formula of copy.querySelectorAll('.katex-display, .katex')) {
     if (formula.parentElement?.closest('.katex-display, .katex')) continue;
@@ -140,16 +185,15 @@ export function wordSource(limits) {
       wrapper.append(block);
     }
   }
-  return { html: copy.innerHTML, pictures, skipped };
+  return { html: copy.innerHTML, pictures: groups.flat().map(({ name, clip }) => ({ name, clip })), skipped };
 }
 
-/** Each picture wordSource marked, as PNG bytes, in its order. */
+/** Each capture wordSource named, as PNG bytes, in its order: a rectangle of the page, never larger than a page. */
 export async function wordPictures(page, pictures, timeout) {
   const captured = [];
-  for (const { index, name } of pictures) {
-    const bytes = await page.locator(`[data-export-picture="${index}"]`).screenshot({
-      type: 'png', animations: 'disabled', timeout,
-    });
+  for (const { name, clip } of pictures) {
+    // fullPage: the clip is in document coordinates, so a picture below the first screen is captured where it is.
+    const bytes = await page.screenshot({ type: 'png', clip, fullPage: true, animations: 'disabled', timeout });
     captured.push({ name, bytes });
   }
   return captured;
@@ -223,6 +267,8 @@ export class WordConverter {
     });
   }
 
+  /** Ends the worker and fails what it holds (a render that passed its deadline); the next conversion starts a
+   * new one. */
   async close() {
     const { worker } = this;
     this.worker = null;
