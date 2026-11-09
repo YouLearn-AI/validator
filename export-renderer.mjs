@@ -1,4 +1,4 @@
-// A PDF of saved outputs (a chat answer first), drawn by the web app's own print page (ops I-1313).
+// A PDF or a Word file of saved outputs (a chat answer first), drawn by the web app's own print page (ops I-1313).
 //
 // The caller (the backend) sends the outputs as data, never a URL: the page this renderer opens is its own
 // configuration (EXPORT_PRINT_URL, export-server.mjs), the web app's print route. The handshake with that page:
@@ -6,7 +6,7 @@
 //   2. The renderer calls it with the outputs. It draws them with the same components the chat uses (Markdown,
 //      math, diagrams, images, right-to-left text), waits for its fonts, images and diagrams, and resolves with
 //      { diagrams, imagesFailed } (counts), or rejects.
-//   3. The renderer prints the page to an A4 PDF.
+//   3. The renderer prints the page to an A4 PDF, or reads the drawn page into a Word file (export-docx.mjs).
 // The viewport is the A4 page's printable width, so what the page lays out on screen is what prints.
 //
 // What the page may reach is only what a print needs. In the browser (exportRequestAllowed): any request to the
@@ -20,6 +20,15 @@
 // never the outputs' text, titles or a URL.
 
 import { errorCode } from './request-errors.mjs';
+import {
+  DOCX_TYPE, WORD_LIMITS, WordFailed, wordPictures, wordSource,
+} from './export-docx.mjs';
+
+// The files a render makes, by format: what it answers and its type.
+export const EXPORT_FORMATS = Object.freeze({
+  pdf: Object.freeze({ type: 'application/pdf' }),
+  docx: Object.freeze({ type: DOCX_TYPE }),
+});
 
 export const EXPORT_DEFAULTS = Object.freeze({
   // A4 less the margins below, in CSS pixels (96 per inch): 182 mm wide.
@@ -33,7 +42,7 @@ export const EXPORT_DEFAULTS = Object.freeze({
   // The whole teardown after a render or its deadline: close the context, else reset the browser. deadlineMs +
   // teardownMs + a reset (at most 15 s, guarded-browser.mjs) stays under the service's 120 s request timeout.
   teardownMs: 15_000,
-  // A PDF larger than this is refused: the backend holds it in memory to send it on.
+  // A file larger than this is refused: the backend holds it in memory to send it on.
   maxBytes: 60_000_000,
 });
 
@@ -127,23 +136,30 @@ function within(promise, ms) {
 const isCount = (value) => Number.isInteger(value) && value >= 0;
 
 /**
- * A renderPdf bound to one GuardedBrowser and one print page.
+ * A render bound to one GuardedBrowser and one print page.
  * @param {import('./guarded-browser.mjs').GuardedBrowser} guardedBrowser
- * @param {{ printUrl: string, options?: Partial<typeof EXPORT_DEFAULTS>, log?: Console }} config
+ * @param {{ printUrl: string, word?: import('./export-docx.mjs').WordConverter,
+ *   options?: Partial<typeof EXPORT_DEFAULTS>, log?: Console }} config
+ *   word: the converter a Word file needs; without it every Word render fails (code word_unavailable).
  */
-export function createExportRenderer(guardedBrowser, { printUrl, options = {}, log = console }) {
+export function createExportRenderer(guardedBrowser, { printUrl, word = null, options = {}, log = console }) {
   const o = { ...EXPORT_DEFAULTS, ...options };
   const allowedOrigin = new URL(printUrl).origin;
   let busy = false;
 
   /**
-   * Print `doc` ({ title, language, direction, outputs: [{ kind, title, chunks }] }) to a PDF.
-   * @returns {Promise<{ pdf: Buffer, diagrams: number, imagesFailed: number, blocked: number, ms: number, warm: boolean }>}
+   * Draw `doc` ({ title, language, direction, outputs: [{ kind, title, chunks }] }) and make it a file: an A4
+   * PDF, or a Word file (`format` "docx") of the same parts.
+   * @param {object} doc
+   * @param {keyof typeof EXPORT_FORMATS} [format]
+   * @returns {Promise<{ file: Buffer, diagrams: number, imagesFailed: number, blocked: number, ms: number, warm: boolean }>}
+   *   imagesFailed: images the page could not load, plus, in a Word file, pictures left out of it
    * @throws {ExportBusy} another export is running here
    * @throws {ExportTimeout} the deadline passed
    * @throws {ExportFailed} anything else, by stage and code only
    */
-  return async function renderPdf(doc) {
+  return async function render(doc, format = 'pdf') {
+    if (!Object.hasOwn(EXPORT_FORMATS, format)) throw new ExportFailed('config', 'bad_format');
     if (busy) throw new ExportBusy();
     busy = true;
     const t0 = Date.now();
@@ -164,9 +180,11 @@ export function createExportRenderer(guardedBrowser, { printUrl, options = {}, l
       const work = (async () => {
         const opened = await guardedBrowser.newContext({
           viewport: { ...o.viewport },
-          // Print colours and backgrounds as the page sets them, light: the PDF is paper.
+          // Print colours and backgrounds as the page sets them, light: the file is paper.
           colorScheme: 'light',
           locale: language,
+          // A Word file's pictures are captured from the page: at twice the size, they stay sharp in print.
+          deviceScaleFactor: format === 'docx' ? WORD_LIMITS.deviceScaleFactor : 1,
         });
         if (ended) {
           await within(opened.close(), o.teardownMs).catch(() => {});
@@ -223,32 +241,28 @@ export function createExportRenderer(guardedBrowser, { printUrl, options = {}, l
         if (!drawn || !isCount(drawn.diagrams) || !isCount(drawn.imagesFailed)) {
           throw new ExportFailed('draw', 'bad_answer');
         }
-        stage = 'print';
-        const pdf = await page.pdf({
-          format: o.format,
-          printBackground: true,
-          margin: { ...o.margin },
-          displayHeaderFooter: true,
-          headerTemplate: '<div></div>',
-          footerTemplate: FOOTER,
-        });
-        if (pdf.length > o.maxBytes) throw new ExportFailed('print', 'too_large');
-        return { pdf, diagrams: drawn.diagrams, imagesFailed: drawn.imagesFailed };
+        stage = format === 'docx' ? 'word' : 'print';
+        const made = format === 'docx'
+          ? await wordFile(page, language, Math.max(1, o.deadlineMs - (Date.now() - t0)))
+          : { file: await printPdf(page), left: 0 };
+        if (made.file.length > o.maxBytes) throw new ExportFailed(stage, 'too_large');
+        return { file: made.file, diagrams: drawn.diagrams, imagesFailed: drawn.imagesFailed + made.left };
       })();
       work.catch(() => {});
       const result = await Promise.race([work, expired]);
       const ms = Date.now() - t0;
-      log.info(`[EXPORT_PDF] ok outputs=${doc.outputs.length} diagrams=${result.diagrams} `
-        + `images_failed=${result.imagesFailed} blocked=${blocked} bytes=${result.pdf.length} warm=${warm} ms=${ms}`);
+      log.info(`[EXPORT] ok format=${format} outputs=${doc.outputs.length} diagrams=${result.diagrams} `
+        + `images_failed=${result.imagesFailed} blocked=${blocked} bytes=${result.file.length} warm=${warm} ms=${ms}`);
       return { ...result, blocked, ms, warm };
     } catch (error) {
       if (error instanceof ExportTimeout) {
-        log.warn(`[EXPORT_PDF] timed_out stage=${stage} blocked=${blocked} warm=${warm} ms=${Date.now() - t0}`);
+        log.warn(`[EXPORT] timed_out format=${format} stage=${stage} blocked=${blocked} warm=${warm} ms=${Date.now() - t0}`);
         throw error;
       }
       // The stage and a code only: a Playwright error quotes the URL and text the page threw.
-      const code = error instanceof ExportFailed ? error.code : errorCode(error);
-      log.error(`[EXPORT_PDF] failed stage=${stage} code=${code} blocked=${blocked} warm=${warm} ms=${Date.now() - t0}`);
+      const code = error instanceof ExportFailed || error instanceof WordFailed ? error.code : errorCode(error);
+      log.error(`[EXPORT] failed format=${format} stage=${stage} code=${code} blocked=${blocked} warm=${warm} `
+        + `ms=${Date.now() - t0}`);
       throw error instanceof ExportFailed ? error : new ExportFailed(stage, code);
     } finally {
       ended = true;
@@ -259,10 +273,36 @@ export function createExportRenderer(guardedBrowser, { printUrl, options = {}, l
         ? await within(context.close(), o.teardownMs).then(() => true, () => false)
         : true;
       if (!closed) {
-        log.warn('[EXPORT_PDF] teardown stalled; resetting the browser');
+        log.warn('[EXPORT] teardown stalled; resetting the browser');
         await guardedBrowser.reset().catch(() => {});
       }
       busy = false;
     }
   };
+
+  function printPdf(page) {
+    return page.pdf({
+      format: o.format,
+      printBackground: true,
+      margin: { ...o.margin },
+      displayHeaderFooter: true,
+      headerTemplate: '<div></div>',
+      footerTemplate: FOOTER,
+    });
+  }
+
+  /** The drawn page as a Word file in `language`, within `timeoutMs`; `left`: pictures left out of it. */
+  async function wordFile(page, language, timeoutMs) {
+    if (!word) throw new ExportFailed('word', 'word_unavailable');
+    let source;
+    try {
+      source = await page.evaluate(wordSource, WORD_LIMITS);
+    } catch {
+      // Not the error itself: its message is the page's.
+      throw new ExportFailed('word', 'page_failed');
+    }
+    const pictures = await wordPictures(page, source.pictures, o.gotoTimeoutMs);
+    const { docx, missing } = await word.convert({ html: source.html, pictures, language }, timeoutMs);
+    return { file: docx, left: source.skipped + missing };
+  }
 }

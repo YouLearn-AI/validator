@@ -4,7 +4,8 @@
   the real page (export-renderer.mjs), drawn with KaTeX for math and an inline SVG for a diagram. The real page
   draws chunks with the chat's own components; this one draws only what the tests check: every paragraph of a
   "response" chunk (blank lines split paragraphs; $...$ and $$...$$ are math), a "whiteboard" chunk as an SVG
-  diagram, and an image. Text goes in with textContent, never as HTML.
+  diagram, and an image. Text goes in with textContent, never as HTML, except a test-only "fixture-html" chunk: the
+  test's own markup for the parts a Word file is checked on (tables, lists, headings, code, a drawn timeline).
 -->
 <html>
 <head>
@@ -79,6 +80,12 @@
             diagrams += 1;
           } else if (chunk.type === 'image') {
             images.push(image(chunk.content));
+          } else if (chunk.type === 'fixture-html') {
+            // Test-only: markup as the web app's Markdown draws it (tables, lists, headings, code), from the
+            // test's own constant, so the Word file's part kinds can be checked against this stand-in.
+            const part = document.createElement('div');
+            part.innerHTML = chunk.content;
+            main.append(part);
           }
         }
       }

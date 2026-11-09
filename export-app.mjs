@@ -1,14 +1,17 @@
 // The export renderer's HTTP app (ops I-1313): its own private service from this repo's code (export-server.mjs),
-// never the public validator. Two routes: GET /health and POST /render-pdf. The shared key is always required
-// (render-auth.mjs with required: true; no key configured refuses everything).
+// never the public validator. Routes: GET /health, POST /render-pdf and POST /render-docx. The shared key is always
+// required (render-auth.mjs with required: true; no key configured refuses everything).
 //
-// POST /render-pdf takes saved outputs as data, never a URL (the page that draws them is the service's own
-// configuration), and answers the PDF's bytes (application/pdf) or JSON with a code.
+// POST /render-pdf and /render-docx take saved outputs as data, never a URL (the page that draws them is the
+// service's own configuration), and answer the file's bytes (a PDF, or a Word file of the same parts) or JSON with
+// a code.
 
 import express from 'express';
 import { renderAuth } from './render-auth.mjs';
 import { errorCode, jsonErrorHandler } from './request-errors.mjs';
-import { ExportBusy, ExportFailed, ExportTimeout } from './export-renderer.mjs';
+import {
+  EXPORT_FORMATS, ExportBusy, ExportFailed, ExportTimeout,
+} from './export-renderer.mjs';
 
 // A 600k-character summary's chunks are about 1.5 MB of JSON (I-1177's longest test document).
 export const EXPORT_BODY_LIMIT = '8mb';
@@ -49,9 +52,10 @@ export function documentProblem(body) {
 }
 
 /**
- * @param {{ renderPdf: Function, key?: string, log?: Console }} options
+ * @param {{ render: (doc: object, format: keyof typeof EXPORT_FORMATS) => Promise<object>, key?: string,
+ *   log?: Console }} options render: export-renderer.mjs createExportRenderer's
  */
-export function createExportApp({ renderPdf, key = process.env.RENDER_API_KEY || '', log = console }) {
+export function createExportApp({ render, key = process.env.RENDER_API_KEY || '', log = console }) {
   const app = express();
   const auth = renderAuth({ key, required: true, log });
 
@@ -60,14 +64,14 @@ export function createExportApp({ renderPdf, key = process.env.RENDER_API_KEY ||
   });
 
   // The key is checked before the body is read.
-  app.post('/render-pdf', auth, express.json({ limit: EXPORT_BODY_LIMIT, inflate: false }), async (req, res) => {
+  const renderRoute = (format) => async (req, res) => {
     const problem = documentProblem(req.body);
     if (problem) return res.status(400).json({ success: false, error: problem });
     try {
-      const { pdf, diagrams, imagesFailed, blocked, ms } = await renderPdf(req.body.document);
+      const { file, diagrams, imagesFailed, blocked, ms } = await render(req.body.document, format);
       res.set({
-        'Content-Type': 'application/pdf',
-        'Content-Length': String(pdf.length),
+        'Content-Type': EXPORT_FORMATS[format].type,
+        'Content-Length': String(file.length),
         // Counts and times for the caller's logs; no text from the outputs.
         'X-Export-Diagrams': String(diagrams),
         'X-Export-Images-Failed': String(imagesFailed),
@@ -76,7 +80,7 @@ export function createExportApp({ renderPdf, key = process.env.RENDER_API_KEY ||
         'Cache-Control': 'no-store',
         'X-Export-Ms': String(ms),
       });
-      return res.status(200).end(pdf);
+      return res.status(200).end(file);
     } catch (error) {
       if (error instanceof ExportBusy) {
         res.set('Retry-After', '5');
@@ -90,7 +94,10 @@ export function createExportApp({ renderPdf, key = process.env.RENDER_API_KEY ||
       const code = error instanceof ExportFailed ? error.code : errorCode(error);
       return res.status(500).json({ success: false, error: 'Export failed', stage, code });
     }
-  });
+  };
+  for (const format of Object.keys(EXPORT_FORMATS)) {
+    app.post(`/render-${format}`, auth, express.json({ limit: EXPORT_BODY_LIMIT, inflate: false }), renderRoute(format));
+  }
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not Found' });
@@ -98,7 +105,7 @@ export function createExportApp({ renderPdf, key = process.env.RENDER_API_KEY ||
 
   // A body that doesn't parse, is too large or is compressed, and anything a route throws: a fixed answer and a
   // code, never Express's default handler (it logs the error's stack, which can quote the body).
-  app.use(jsonErrorHandler({ log, tag: 'EXPORT_PDF' }));
+  app.use(jsonErrorHandler({ log, tag: 'EXPORT' }));
 
   return app;
 }

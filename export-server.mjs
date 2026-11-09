@@ -2,6 +2,8 @@
 // (Dockerfile.video) with its own entry point, as the layout checker does: Cloud Run
 // `--command node --args export-server.mjs`.
 //
+// It makes PDFs and Word files (export-docx.mjs: pandoc in a worker thread, started on the first Word file).
+//
 // EXPORT_PRINT_URL: the web app's print page (for example https://app.youlearn.ai/export-print). The renderer
 // opens it with the output's language appended (/en, /ar), never a URL from a request. A print page on this
 // machine (http://localhost:3000/export-print, local development) is the one origin the egress guard lets
@@ -11,18 +13,19 @@
 import { GuardedBrowser } from './guarded-browser.mjs';
 import { listenWhenReady } from './check-app.mjs';
 import { createExportApp } from './export-app.mjs';
+import { WordConverter } from './export-docx.mjs';
 import { createExportRenderer, ExportFailed, printOrigin } from './export-renderer.mjs';
 
 const printUrl = process.env.EXPORT_PRINT_URL || '';
 const origin = printOrigin(printUrl);
 if (!origin) {
   // eslint-disable-next-line no-console
-  console.error('[EXPORT_PDF] EXPORT_PRINT_URL is not an http(s) URL: every export is refused');
+  console.error('[EXPORT] EXPORT_PRINT_URL is not an http(s) URL: every export is refused');
 }
 const trusted = origin?.loopback ? [{ host: origin.host, port: origin.port }] : [];
 if (trusted.length) {
   // eslint-disable-next-line no-console
-  console.warn('[EXPORT_PDF] the print page is on this machine: its origin alone skips the egress address check');
+  console.warn('[EXPORT] the print page is on this machine: its origin alone skips the egress address check');
 }
 
 // As in check-server.mjs: a Chromium that never gets ready is ended by exiting the process (Playwright's exit
@@ -33,24 +36,25 @@ const browser = new GuardedBrowser({
   guard: { logHosts: false, trusted, httpsOnly: true },
   onStuckLaunch: () => {
     // eslint-disable-next-line no-console
-    console.error('[EXPORT_PDF] restarting the instance: Chromium did not start');
+    console.error('[EXPORT] restarting the instance: Chromium did not start');
     setTimeout(() => process.exit(1), 2000);
   },
 });
+const word = new WordConverter();
 const app = createExportApp({
-  renderPdf: origin ? createExportRenderer(browser, { printUrl }) : async () => {
+  render: origin ? createExportRenderer(browser, { printUrl, word }) : async () => {
     throw new ExportFailed('config', 'unconfigured');
   },
 });
 
 let closing = false;
 const listening = listenWhenReady(app, browser, {
-  port: process.env.PORT || 3002, closing: () => closing, tag: 'EXPORT_PDF', name: 'Export renderer',
+  port: process.env.PORT || 3002, closing: () => closing, tag: 'EXPORT', name: 'Export renderer',
 });
 
 const shutdown = async () => {
   closing = true;
-  await browser.close();
+  await Promise.all([browser.close(), word.close()]);
   const server = await listening.catch(() => null);
   if (server) server.close(() => process.exit(0));
   else process.exit(0);

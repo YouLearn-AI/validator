@@ -16,9 +16,11 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { strFromU8, unzipSync } from 'fflate';
 import { GuardedBrowser } from '../guarded-browser.mjs';
 import { startEgressProxy, trustedOriginKeys } from '../egress-guard.mjs';
 import { createExportApp, documentProblem } from '../export-app.mjs';
+import { DOCX_MAGIC, DOCX_TYPE, WordConverter, WordFailed } from '../export-docx.mjs';
 import {
   createExportRenderer, exportRequestAllowed, ExportBusy, ExportFailed, ExportTimeout, printOrigin, printPageUrl,
 } from '../export-renderer.mjs';
@@ -75,6 +77,20 @@ function missingWords(paragraph, text) {
   });
 }
 
+/** A Word file's main text (word/document.xml) and the names of the pictures in it. */
+function docxParts(buffer) {
+  const files = unzipSync(new Uint8Array(buffer));
+  return {
+    xml: strFromU8(files['word/document.xml']),
+    media: Object.keys(files).filter((name) => name.startsWith('word/media/')),
+  };
+}
+
+/** The paragraphs (<w:p>) of a Word file's main text, each as its XML. */
+const docxParagraphs = (xml) => xml.split(/(?=<w:p>|<w:p )/).slice(1).map((p) => p.split('</w:p>')[0]);
+/** A paragraph's text, from its runs. */
+const paragraphText = (p) => [...p.matchAll(/<w:t(?: [^>]*)?>([^<]*)<\/w:t>/g)].map((m) => m[1]).join('');
+
 const DOC = {
   title: 'Cell biology',
   language: 'en',
@@ -94,6 +110,18 @@ const ARABIC = [
   'تنتج الميتوكوندريا الطاقة على شكل جزيئات ATP داخل الخلية.',
   'تحتوي النواة على المادة الوراثية التي تتحكم في نشاط الخلية.',
 ];
+
+// What the web app's Markdown draws for a cheat sheet's other parts, a drawn timeline (a diagram the page draws in
+// place of a picture), a picture, and a control the page hides.
+const PIXEL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const WORD_PARTS = `<h2>Units</h2>
+<table><thead><tr><th>Quantity</th><th>Unit</th></tr></thead><tbody><tr><td>Velocity</td><td>m/s</td></tr></tbody></table>
+<ul><li>Speed is a scalar.</li><li>Velocity is a vector.</li></ul>
+<pre><code>v = d / t</code></pre>
+<figure class="timeline"><div style="padding:8px;border:1px solid #999">1687: Newton's Principia</div>
+<div style="padding:8px;border:1px solid #999">1905: Special relativity</div></figure>
+<p><img src="${PIXEL}" width="40" height="40" alt=""></p>
+<div style="display:none">Hidden control</div>`;
 
 describe('documentProblem', () => {
   test('accepts a document of outputs', () => {
@@ -143,8 +171,8 @@ describe('export app', () => {
   const calls = [];
   let behaviour = 'ok';
 
-  async function post(body, headers = { 'x-api-key': KEY }) {
-    const response = await fetch(`http://127.0.0.1:${port}/render-pdf`, {
+  async function post(body, headers = { 'x-api-key': KEY }, format = 'pdf') {
+    const response = await fetch(`http://127.0.0.1:${port}/render-${format}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify(body),
@@ -162,12 +190,13 @@ describe('export app', () => {
     const app = createExportApp({
       key: KEY,
       log,
-      renderPdf: async (doc) => {
-        calls.push(doc);
+      render: async (doc, format) => {
+        calls.push({ doc, format });
         if (behaviour === 'busy') throw new ExportBusy();
         if (behaviour === 'timeout') throw new ExportTimeout(10);
         if (behaviour === 'failed') throw new ExportFailed('draw', 'page_failed');
-        return { pdf: Buffer.from('%PDF-1.7 test'), diagrams: 2, imagesFailed: 0, blocked: 1, ms: 5 };
+        const file = format === 'docx' ? Buffer.concat([DOCX_MAGIC, Buffer.from('test')]) : Buffer.from('%PDF-1.7 test');
+        return { file, diagrams: 2, imagesFailed: 0, blocked: 1, ms: 5 };
       },
     });
     server = http.createServer(app);
@@ -184,7 +213,7 @@ describe('export app', () => {
 
   test('refuses everything when no key is configured', async () => {
     const { log } = collectingLog();
-    const open = http.createServer(createExportApp({ key: '', log, renderPdf: async () => assert.fail('rendered') }));
+    const open = http.createServer(createExportApp({ key: '', log, render: async () => assert.fail('rendered') }));
     const openPort = await listen(open);
     try {
       const response = await fetch(`http://127.0.0.1:${openPort}/render-pdf`, {
@@ -205,6 +234,18 @@ describe('export app', () => {
     assert.equal(answer.body.toString(), '%PDF-1.7 test');
     assert.equal(answer.headers.get('x-export-diagrams'), '2');
     assert.equal(answer.headers.get('x-export-blocked'), '1');
+    assert.equal(calls.at(-1).format, 'pdf');
+  });
+
+  test('answers a Word file of the same document on /render-docx', async () => {
+    behaviour = 'ok';
+    const answer = await post({ document: DOC }, { 'x-api-key': KEY }, 'docx');
+    assert.equal(answer.status, 200);
+    assert.equal(answer.headers.get('content-type'), DOCX_TYPE);
+    assert.equal(answer.headers.get('cache-control'), 'no-store');
+    assert.ok(answer.body.subarray(0, 4).equals(DOCX_MAGIC));
+    assert.deepEqual(calls.at(-1), { doc: DOC, format: 'docx' });
+    assert.equal((await post({ document: DOC }, {}, 'docx')).status, 401);
   });
 
   test('a bad document is 400 and never renders', async () => {
@@ -475,15 +516,16 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     });
   });
   after(async () => {
-    await browser.close();
+    await Promise.all([browser.close(), word.close()]);
     page.closeAllConnections?.();
     page.close();
     secret.close();
     outside.server.close();
   });
 
+  const word = new WordConverter();
   const renderer = (pathname, log, options) => createExportRenderer(browser, {
-    printUrl: `http://127.0.0.1:${pagePort}${pathname}`, log, options,
+    printUrl: `http://127.0.0.1:${pagePort}${pathname}`, log, options, word,
   });
 
   test('an English answer with math and a diagram: every paragraph is in the PDF text', async () => {
@@ -501,7 +543,7 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
       }],
     };
     const result = await renderer('/export-print', log)(doc);
-    assert.equal(result.pdf.subarray(0, 5).toString(), '%PDF-');
+    assert.equal(result.file.subarray(0, 5).toString(), '%PDF-');
     assert.equal(result.diagrams, 1);
     assert.equal(requested.filter((u) => u === '/export-print/en').length, 1);
     // The print page's own assets (KaTeX's style, script and fonts) come from its origin and are let through.
@@ -510,7 +552,7 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     }
     assert.ok(requested.some((u) => /^\/assets\/katex\/fonts\/KaTeX_[\w-]+\.woff2$/.test(u)), requested.join('\n'));
     assert.equal(result.blocked, 0);
-    const text = squash(await pdfText(result.pdf));
+    const text = squash(await pdfText(result.file));
     // The prose of every paragraph, the math as KaTeX drew it, and the diagram's labels.
     for (const paragraph of ENGLISH) {
       const prose = paragraph.replace(/\$\$[^$]*\$\$|\$[^$]*\$/g, ' ').trim();
@@ -521,7 +563,7 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     for (const glyphs of ['x=', '−b±', '4ac', '2a']) assert.ok(text.includes(glyphs), `inline math ${glyphs}: ${text}`);
     for (const label of ['Sunlight', 'Chloroplast', 'Glucose']) assert.ok(text.includes(label), label);
     // Codes, counts and times only: neither the title nor the text reaches a log line.
-    const ok = lines.find((l) => l.startsWith('[EXPORT_PDF] ok outputs=1 diagrams=1 images_failed=0 blocked=0'));
+    const ok = lines.find((l) => l.startsWith('[EXPORT] ok format=pdf outputs=1 diagrams=1 images_failed=0 blocked=0'));
     assert.ok(ok, lines.join('\n'));
     assert.ok(lines.every((l) => !l.includes('Photosynthesis') && !l.includes('Sunlight')));
   });
@@ -536,7 +578,7 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     };
     const result = await renderer('/export-print', log)(doc);
     assert.ok(requested.includes('/export-print/ar'));
-    const text = await pdfText(result.pdf, ' ');
+    const text = await pdfText(result.file, ' ');
     for (const paragraph of ARABIC) assert.deepEqual(missingWords(paragraph, text), [], paragraph);
     // The words of one line come in reverse (drawing order is left to right), the proof the line runs right to left.
     const firstLine = words(ARABIC[0]);
@@ -550,7 +592,7 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     const { log, lines } = collectingLog();
     const doc = { ...DOC, title: 'fail', outputs: [{ kind: 'answer', chunks: [{ type: 'response', content: 'private notes' }] }] };
     await assert.rejects(renderer('/export-print', log)(doc), (e) => e instanceof ExportFailed && e.code === 'page_failed');
-    assert.ok(lines.some((l) => l.startsWith('[EXPORT_PDF] failed stage=draw code=page_failed')));
+    assert.ok(lines.some((l) => l.startsWith('[EXPORT] failed format=pdf stage=draw code=page_failed')));
     assert.ok(lines.every((l) => !l.includes('private notes')));
   });
 
@@ -561,7 +603,7 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     const render = renderer('/probe', log);
     const before = { ...outside.seen };
     const result = await render(doc);
-    assert.equal(result.pdf.subarray(0, 5).toString(), '%PDF-');
+    assert.equal(result.file.subarray(0, 5).toString(), '%PDF-');
     // What each attempt saw in the page (the frame's load event fires for an error page too, so the counts
     // below decide it).
     const { outsideFrame, ...attempts } = probeResults;
@@ -585,7 +627,7 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     const before = { ...outside.seen };
     const hits = secretHits;
     const result = await renderer('/redirect', log)(doc);
-    assert.equal(result.pdf.subarray(0, 5).toString(), '%PDF-');
+    assert.equal(result.file.subarray(0, 5).toString(), '%PDF-');
     for (const asked of ['/go-out.js', '/go-out-fetch', '/img-out.png']) assert.ok(requested.includes(asked), asked);
     // The script and the fetch are fetched with no redirect followed; the image's redirect is followed by the
     // browser and refused by the egress guard (plain http to another loopback port).
@@ -606,14 +648,126 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     assert.equal(secretHits, hits);
   });
 
+  test('a Word file of the same parts: equations, tables, lists, headings, code and every picture', async () => {
+    const { log, lines } = collectingLog();
+    const doc = {
+      title: 'Kinematics sheet',
+      language: 'en',
+      outputs: [{
+        kind: 'answer',
+        title: null,
+        chunks: [
+          { type: 'response', content: ENGLISH.join('\n\n') },
+          { type: 'fixture-html', content: WORD_PARTS },
+          { type: 'whiteboard', content: 'Sunlight -> Chloroplast -> Glucose' },
+        ],
+      }],
+    };
+    const result = await renderer('/export-print', log)(doc, 'docx');
+    assert.ok(result.file.subarray(0, 4).equals(DOCX_MAGIC));
+    assert.equal(result.diagrams, 1);
+    assert.equal(result.imagesFailed, 0);
+    const { xml, media } = docxParts(result.file);
+    const paragraphs = docxParagraphs(xml).map(paragraphText);
+    const text = squash(paragraphs.join(' '));
+    for (const paragraph of ENGLISH) {
+      const prose = paragraph.replace(/\$\$[^$]*\$\$|\$[^$]*\$/g, ' ').trim();
+      if (prose) for (const part of prose.split(/\s{2,}/)) assert.ok(text.includes(squash(part)), part);
+    }
+    // Math as Word equations from KaTeX's TeX: the quadratic formula (a fraction and a root) inline, E = mc² shown.
+    assert.ok((xml.match(/<m:oMath>/g) || []).length >= 2, 'equations');
+    assert.ok(xml.includes('<m:oMathPara>'), 'a display equation');
+    assert.ok(xml.includes('<m:f>') && xml.includes('<m:rad>'), 'fraction and root');
+    // A table stays a table, a list a list, a heading a heading, code its text.
+    assert.equal((xml.match(/<w:tbl>/g) || []).length, 1);
+    for (const cell of ['Quantity', 'Unit', 'Velocity', 'm/s']) assert.ok(paragraphs.includes(cell), cell);
+    assert.ok(xml.includes('<w:numPr>'), 'list numbering');
+    assert.ok(/w:val="Heading2"/.test(xml), 'heading');
+    assert.ok(text.includes(squash('v = d / t')), 'code');
+    // Pictures: the SVG diagram, the drawn timeline and the image, each captured from the page; the page's hidden
+    // controls are left out.
+    assert.equal(media.length, 3, media.join(', '));
+    assert.ok(!text.includes('Hiddencontrol'));
+    // Codes, counts and times only.
+    assert.ok(lines.some((l) => l.startsWith('[EXPORT] ok format=docx outputs=1 diagrams=1 images_failed=0')), lines.join('\n'));
+    assert.ok(lines.every((l) => !l.includes('Photosynthesis') && !l.includes('Kinematics')));
+  });
+
+  test('a Word file of an Arabic answer: its paragraphs and list run right to left, an English one left to right', async () => {
+    const { log } = collectingLog();
+    const doc = {
+      title: 'الخلية',
+      language: 'ar',
+      direction: 'rtl',
+      outputs: [{
+        kind: 'answer',
+        title: null,
+        chunks: [
+          { type: 'response', content: [...ARABIC, 'Mitochondria make ATP.'].join('\n\n') },
+          { type: 'fixture-html', content: '<ol dir="auto"><li>النواة</li><li>الغشاء</li></ol>' },
+        ],
+      }],
+    };
+    const result = await renderer('/export-print', log)(doc, 'docx');
+    const paragraphs = docxParagraphs(docxParts(result.file).xml);
+    const find = (text) => paragraphs.find((p) => paragraphText(p) === text);
+    for (const paragraph of [...ARABIC, 'النواة', 'الغشاء']) {
+      const found = find(paragraph);
+      assert.ok(found, paragraph);
+      assert.ok(found.includes('<w:bidi />') && found.includes('<w:rtl />'), paragraph);
+    }
+    const english = find('Mitochondria make ATP.');
+    assert.ok(english && !english.includes('<w:bidi'), 'an English paragraph stays left to right');
+    assert.ok(find('النواة').includes('<w:numPr>'), 'the list keeps its numbers');
+  });
+
+  test('a Word render with no converter fails with a code, and makes nothing', async () => {
+    const { log } = collectingLog();
+    const plain = createExportRenderer(browser, { printUrl: `http://127.0.0.1:${pagePort}/export-print`, log });
+    await assert.rejects(plain(DOC, 'docx'), (e) => e instanceof ExportFailed && e.code === 'word_unavailable');
+    await assert.rejects(plain(DOC, 'html'), (e) => e instanceof ExportFailed && e.code === 'bad_format');
+  });
+
   test('a second export while one runs is ExportBusy; the deadline is ExportTimeout and frees the renderer', async () => {
     const { log, lines } = collectingLog();
     const stuck = renderer('/hang', log, { deadlineMs: 1500, teardownMs: 2000 });
     const first = stuck(DOC);
     await assert.rejects(stuck(DOC), (e) => e instanceof ExportBusy);
     await assert.rejects(first, (e) => e instanceof ExportTimeout);
-    assert.ok(lines.some((l) => l.startsWith('[EXPORT_PDF] timed_out stage=load')));
+    assert.ok(lines.some((l) => l.startsWith('[EXPORT] timed_out format=pdf stage=load')));
     // The renderer takes the next export once the timed-out one is torn down.
     await assert.rejects(stuck(DOC), (e) => e instanceof ExportTimeout);
+  });
+});
+
+describe('WordConverter (pandoc in a worker thread)', { timeout: 60_000 }, () => {
+  const html = '<p>Pressure <math><semantics><mi>p</mi><annotation encoding="application/x-tex">p</annotation></semantics></math></p>'
+    + '<p><img src="picture-0.png" width="20" height="20" alt=""></p><p><img src="/etc/hosts" alt=""></p>';
+  const pixel = Buffer.from(PIXEL.split(',')[1], 'base64');
+
+  test('makes a .docx with only the pictures it is handed: a path on disk is never read', async () => {
+    const word = new WordConverter();
+    try {
+      const { docx, missing } = await word.convert({ html, pictures: [{ name: 'picture-0.png', bytes: pixel }], language: 'en' }, 30_000);
+      assert.ok(docx.subarray(0, 4).equals(DOCX_MAGIC));
+      const { xml, media } = docxParts(docx);
+      assert.equal(media.length, 1);
+      assert.equal(missing, 1);
+      assert.ok(xml.includes('<m:oMath>'));
+      assert.ok(!xml.includes('localhost'), 'nothing from /etc/hosts');
+    } finally {
+      await word.close();
+    }
+  });
+
+  test('a conversion past its time ends the worker with WordFailed; the next one starts a new worker', async () => {
+    const word = new WordConverter();
+    try {
+      await assert.rejects(word.convert({ html, pictures: [], language: 'en' }, 1), (e) => e instanceof WordFailed && e.code === 'timeout');
+      const { docx } = await word.convert({ html, pictures: [], language: 'en' }, 30_000);
+      assert.ok(docx.subarray(0, 4).equals(DOCX_MAGIC));
+    } finally {
+      await word.close();
+    }
   });
 });
