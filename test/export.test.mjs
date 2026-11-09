@@ -888,6 +888,14 @@ describe('pageBreaks', () => {
       `${p('Q')}<w:p><w:r><w:br w:type="page" /></w:r></w:p>${table}`);
   });
 
+  test('several parts on new pages, the second opening with a table, each get their own break (Codex review)', () => {
+    const table = `<w:tbl><w:tblPr /><w:tr><w:tc>${p('a')}</w:tc></w:tr></w:tbl>`;
+    const xml = `${p('Q')}${mark(4, 0)}${p('Key 1')}<w:bookmarkEnd w:id="4" />`
+      + `${mark(5, 1)}${table}${p('after')}<w:bookmarkEnd w:id="5" />`;
+    assert.equal(pageBreaks(xml), `${p('Q')}${p('Key 1', '<w:pPr><w:pageBreakBefore /></w:pPr>')}`
+      + `<w:p><w:r><w:br w:type="page" /></w:r></w:p>${table}${p('after')}`);
+  });
+
   test('other bookmarks, text that names ours, and a file with none are left as they are', () => {
     const xml = `<w:bookmarkStart w:id="2" w:name="answers" />${p(`${PAGE_BREAK_BOOKMARK}0 &lt;w:bookmarkStart&gt;`)}`
       + '<w:bookmarkEnd w:id="2" />';

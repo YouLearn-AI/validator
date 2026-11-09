@@ -287,15 +287,9 @@ export function pageBreaks(xml) {
   const marks = [...xml.matchAll(/<w:bookmarkStart w:id="(\d+)" w:name="([^"]*)" \/>/g)]
     .filter((match) => match[2].startsWith(PAGE_BREAK_BOOKMARK));
   let out = xml;
-  for (const [tag, id] of marks) out = out.replace(tag, '').replace(`<w:bookmarkEnd w:id="${id}" />`, '');
-  // Where each bookmark was, in the text without them: each one's start, less the bookmarks before it.
-  let removed = 0;
-  const places = marks.map((match) => {
-    const at = match.index - removed;
-    removed += match[0].length;
-    return at;
-  });
-  for (const at of places.sort((a, b) => b - a)) {
+  // Last mark first: each break goes in after its own mark, so the marks before it keep their places.
+  for (const match of [...marks].reverse()) {
+    const at = match.index + match[0].length;
     const rest = out.slice(at);
     const paragraph = /<w:p>|<w:p /.exec(rest);
     const table = rest.indexOf('<w:tbl>');
@@ -313,6 +307,8 @@ export function pageBreaks(xml) {
       out = `${out.slice(0, open)}<w:pPr><w:pageBreakBefore /></w:pPr>${out.slice(open)}`;
     }
   }
+  // Then our bookmarks go: each start tag is unique by its id, and so is its end.
+  for (const [tag, id] of marks) out = out.replace(tag, '').replace(`<w:bookmarkEnd w:id="${id}" />`, '');
   return out;
 }
 

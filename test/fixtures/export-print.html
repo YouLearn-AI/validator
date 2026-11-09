@@ -47,14 +47,14 @@
       return figure;
     }
 
-    function image(src) {
+    function image(src, into) {
       const img = new Image();
       const settled = new Promise((resolve) => {
         img.onload = () => resolve(img.naturalWidth > 0);
         img.onerror = () => resolve(false);
       });
       img.src = src;
-      main.append(img);
+      into.append(img);
       return settled;
     }
 
@@ -90,7 +90,7 @@
             into.append(diagram(chunk.content.split('->').map((s) => s.trim())));
             diagrams += 1;
           } else if (chunk.type === 'image') {
-            images.push(image(chunk.content));
+            images.push(image(chunk.content, into));
           } else if (chunk.type === 'fixture-html') {
             // Test-only: markup as the web app's Markdown draws it (tables, lists, headings, code), from the
             // test's own constant, so the Word file's part kinds can be checked against this stand-in.
