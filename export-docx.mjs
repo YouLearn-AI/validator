@@ -8,7 +8,7 @@
 //      paragraphs and runs from that).
 //   2. The renderer captures each marked picture as a PNG from the page (wordPictures).
 //   3. A WordConverter turns HTML and pictures into a .docx with pandoc (export-docx-worker.mjs), in a worker
-//      thread that is terminated when the render's deadline passes.
+//      thread that is terminated when the render's deadline passes. Its tables get a thin grid, as the chat's do.
 // Nothing here parses the answer's text: the page draws it with the chat's components, and pandoc reads the
 // page's HTML. Logs hold codes, counts and times only.
 
@@ -152,7 +152,13 @@ export function wordSource(limits) {
   for (const element of root.querySelectorAll('[data-export-hidden], [data-export-picture], [data-export-dir]')) {
     for (const name of ['data-export-hidden', 'data-export-picture', 'data-export-dir']) element.removeAttribute(name);
   }
-  copy.querySelectorAll('[data-export-hidden], script, style, link, noscript, template, button').forEach((e) => e.remove());
+  copy.querySelectorAll('[data-export-hidden], script, style, link, noscript, template').forEach((e) => e.remove());
+  // A button is a control and is left out, unless it holds a picture: the chat draws an image whiteboard's pictures
+  // as buttons that open a viewer (image-whiteboard.tsx); the picture stays, its button goes (Codex review).
+  for (const button of copy.querySelectorAll('button')) {
+    if (button.querySelector('[data-export-picture]')) button.replaceWith(...button.childNodes);
+    else button.remove();
+  }
   for (const marked of copy.querySelectorAll('[data-export-picture]')) {
     const images = groups[Number(marked.getAttribute('data-export-picture'))].map(({ name, size }) => {
       const img = document.createElement('img');

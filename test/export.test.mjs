@@ -121,6 +121,8 @@ const WORD_PARTS = `<h2>Units</h2>
 <figure class="timeline"><div style="padding:8px;border:1px solid #999">1687: Newton's Principia</div>
 <div style="padding:8px;border:1px solid #999">1905: Special relativity</div></figure>
 <p><img src="${PIXEL}" width="40" height="40" alt=""></p>
+<div><button class="print-visible"><img src="${PIXEL}" width="48" height="27" alt="A picture the chat opens in a viewer"></button>
+<button>Copy</button></div>
 <div style="display:none">Hidden control</div>`;
 
 describe('documentProblem', () => {
@@ -678,16 +680,20 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     assert.ok((xml.match(/<m:oMath>/g) || []).length >= 2, 'equations');
     assert.ok(xml.includes('<m:oMathPara>'), 'a display equation');
     assert.ok(xml.includes('<m:f>') && xml.includes('<m:rad>'), 'fraction and root');
-    // A table stays a table, a list a list, a heading a heading, code its text.
+    // A table stays a table, with a grid as the chat draws it; a list a list, a heading a heading, code its text.
     assert.equal((xml.match(/<w:tbl>/g) || []).length, 1);
+    const styles = strFromU8(unzipSync(new Uint8Array(result.file))['word/styles.xml']);
+    const tableStyle = styles.slice(styles.indexOf('w:styleId="Table"'));
+    assert.match(tableStyle.slice(0, tableStyle.indexOf('</w:style>')), /<w:tblBorders>\s*<w:top [^>]*w:val="single"/);
     for (const cell of ['Quantity', 'Unit', 'Velocity', 'm/s']) assert.ok(paragraphs.includes(cell), cell);
     assert.ok(xml.includes('<w:numPr>'), 'list numbering');
     assert.ok(/w:val="Heading2"/.test(xml), 'heading');
     assert.ok(text.includes(squash('v = d / t')), 'code');
-    // Pictures: the SVG diagram, the drawn timeline and the image, each captured from the page; the page's hidden
-    // controls are left out.
-    assert.equal(media.length, 3, media.join(', '));
-    assert.ok(!text.includes('Hiddencontrol'));
+    // Pictures: the SVG diagram, the drawn timeline, the image and the image the chat draws as a button (an image
+    // whiteboard), each captured from the page and each placed in the text; the page's controls are left out.
+    assert.equal(media.length, 4, media.join(', '));
+    assert.equal((xml.match(/<a:blip r:embed=/g) || []).length, 4, 'every picture is placed in the text');
+    assert.ok(!text.includes('Hiddencontrol') && !paragraphs.includes('Copy'));
     // Codes, counts and times only.
     assert.ok(lines.some((l) => l.startsWith('[EXPORT] ok format=docx outputs=1 diagrams=1 images_failed=0')), lines.join('\n'));
     assert.ok(lines.every((l) => !l.includes('Photosynthesis') && !l.includes('Kinematics')));
