@@ -329,7 +329,10 @@ describe('the egress guard, HTTPS-only (the export service)', () => {
   });
 
   test('internal addresses are refused on port 443 too', async () => {
-    for (const target of ['127.0.0.1:443', 'rebind.test:443', '169.254.169.254:443', 'metadata.google.internal:443', '10.0.0.1:443']) {
+    for (const target of [
+      '127.0.0.1:443', '[::1]:443', '0.0.0.0:443', 'rebind.test:443', '169.254.169.254:443', 'metadata.google.internal:443',
+      '10.0.0.1:443', '172.16.0.1:443', '192.168.1.1:443', '[fd00::1]:443', '[::ffff:127.0.0.1]:443',
+    ]) {
       assert.equal(await tunnel(target), 403, target);
     }
   });
@@ -475,6 +478,12 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     assert.equal(result.pdf.subarray(0, 5).toString(), '%PDF-');
     assert.equal(result.diagrams, 1);
     assert.equal(requested.filter((u) => u === '/export-print/en').length, 1);
+    // The print page's own assets (KaTeX's style, script and fonts) come from its origin and are let through.
+    for (const asset of ['/assets/katex/katex.min.css', '/assets/katex/katex.min.js', '/assets/katex/contrib/auto-render.min.js']) {
+      assert.ok(requested.includes(asset), asset);
+    }
+    assert.ok(requested.some((u) => /^\/assets\/katex\/fonts\/KaTeX_[\w-]+\.woff2$/.test(u)), requested.join('\n'));
+    assert.equal(result.blocked, 0);
     const text = squash(await pdfText(result.pdf));
     // The prose of every paragraph, the math as KaTeX drew it, and the diagram's labels.
     for (const paragraph of ENGLISH) {
