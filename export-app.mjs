@@ -15,7 +15,8 @@ import {
 
 // A 600k-character summary's chunks are about 1.5 MB of JSON (I-1177's longest test document).
 export const EXPORT_BODY_LIMIT = '8mb';
-export const OUTPUT_KINDS = Object.freeze(['answer', 'summary']);
+// "answer_key": the answers to the questions before it, which the print page starts on a new page (ops I-1313).
+export const OUTPUT_KINDS = Object.freeze(['answer', 'summary', 'answer_key']);
 export const MAX_OUTPUTS = 20;
 export const MAX_CHUNKS = 10_000;
 const MAX_TITLE = 300;

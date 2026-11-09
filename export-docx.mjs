@@ -9,7 +9,8 @@
 //   2. The renderer captures each marked picture as a PNG from the page (wordPictures).
 //   3. A WordConverter turns HTML and pictures into a .docx with pandoc (export-docx-worker.mjs), in a worker
 //      thread that is terminated when the render's deadline passes. Its tables get a thin grid, as the chat's do,
-//      and a right-to-left table lays its columns out right to left (rightToLeftTables).
+//      a right-to-left table lays its columns out right to left (rightToLeftTables), and a part the page starts on
+//      a new page (an answer key) starts a new page in Word too (pageBreaks).
 // Nothing here parses the answer's text: the page draws it with the chat's components, and pandoc reads the
 // page's HTML. Logs hold codes, counts and times only.
 
@@ -19,7 +20,13 @@ export const DOCX_TYPE = 'application/vnd.openxmlformats-officedocument.wordproc
 // A .docx is a zip file.
 export const DOCX_MAGIC = Buffer.from('PK\u0003\u0004', 'latin1');
 
+// The bookmark wordSource gives each part the page starts on a new page; pageBreaks removes it once it placed the
+// break. (pandoc renames a name that starts with "_", Word's hidden bookmarks: Word names start with a letter.)
+export const PAGE_BREAK_BOOKMARK = 'export_page_break_';
+
 export const WORD_LIMITS = Object.freeze({
+  // wordSource runs in the page and can't import: the bookmark it names each new page's part with.
+  pageBreakBookmark: PAGE_BREAK_BOOKMARK,
   // A picture's size in the file, in CSS pixels (pandoc reads them at 96 per inch): at most the text width of a
   // Letter or A4 page with pandoc's 1-inch margins (6.3 in) and its text height (9 in).
   maxWidth: 600,
@@ -46,7 +53,8 @@ export class WordFailed extends Error {
  * Runs in the print page (page.evaluate) after it drew the document. Returns the drawn document as HTML for
  * pandoc, and the captures it names (picture-<n>.png), each a rectangle of the page in document coordinates.
  * Must stay self-contained: Playwright sends its source to the page.
- * @param {{ maxWidth: number, maxHeight: number, maxPictures: number, maxArea: number }} limits
+ * @param {{ pageBreakBookmark: string, maxWidth: number, maxHeight: number, maxPictures: number,
+ *   maxArea: number }} limits
  * @returns {{ html: string, pictures: { name: string, clip: { x: number, y: number, width: number,
  *   height: number } }[], skipped: number }}
  */
@@ -148,10 +156,25 @@ export function wordSource(limits) {
       block.setAttribute('data-export-dir', direction(block));
     }
   }
+  // A part the page starts on a new page (its CSS break-before: an answer key): pandoc writes the element's id as a
+  // bookmark before its first paragraph, and pageBreaks starts that paragraph on a new page.
+  let breaks = 0;
+  for (const element of root.querySelectorAll('*')) {
+    if (element.closest('[data-export-hidden], [data-export-picture]')) continue;
+    if (['page', 'left', 'right', 'recto', 'verso'].includes(getComputedStyle(element).breakBefore)) {
+      element.setAttribute('data-export-break', String(breaks));
+      breaks += 1;
+    }
+  }
 
   const copy = root.cloneNode(true);
-  for (const element of root.querySelectorAll('[data-export-hidden], [data-export-picture], [data-export-dir]')) {
-    for (const name of ['data-export-hidden', 'data-export-picture', 'data-export-dir']) element.removeAttribute(name);
+  const MARKS = ['data-export-hidden', 'data-export-picture', 'data-export-dir', 'data-export-break'];
+  for (const element of root.querySelectorAll(MARKS.map((name) => `[${name}]`).join(', '))) {
+    for (const name of MARKS) element.removeAttribute(name);
+  }
+  for (const element of copy.querySelectorAll('[data-export-break]')) {
+    element.setAttribute('id', `${limits.pageBreakBookmark}${element.getAttribute('data-export-break')}`);
+    element.removeAttribute('data-export-break');
   }
   copy.querySelectorAll('[data-export-hidden], script, style, link, noscript, template').forEach((e) => e.remove());
   // dir="auto" is the browser's to resolve: pandoc keeps it on a heading, where it outweighs the direction the
@@ -248,6 +271,48 @@ export function rightToLeftTables(xml) {
   }
   let out = xml;
   for (const at of marks.sort((a, b) => b - a)) out = `${out.slice(0, at)}<w:bidiVisual />${out.slice(at)}`;
+  return out;
+}
+
+/**
+ * pandoc has no page break, so each part the page starts on a new page (wordSource bookmarked it
+ * PAGE_BREAK_BOOKMARK<n>) gets one here: its first paragraph starts a new page (<w:pageBreakBefore />, in the place
+ * OOXML orders it: after the style, keepNext and keepLines), or, when the part opens with a table, a paragraph that
+ * holds only a page break goes before it. The bookmark then goes, so the student's file has none of ours. Only
+ * pandoc's own markup is read: text is escaped inside <w:t>, so it can't hold a bookmark.
+ * @param {string} xml word/document.xml as pandoc wrote it
+ * @returns {string} the same, each such part on a new page
+ */
+export function pageBreaks(xml) {
+  const marks = [...xml.matchAll(/<w:bookmarkStart w:id="(\d+)" w:name="([^"]*)" \/>/g)]
+    .filter((match) => match[2].startsWith(PAGE_BREAK_BOOKMARK));
+  let out = xml;
+  for (const [tag, id] of marks) out = out.replace(tag, '').replace(`<w:bookmarkEnd w:id="${id}" />`, '');
+  // Where each bookmark was, in the text without them: each one's start, less the bookmarks before it.
+  let removed = 0;
+  const places = marks.map((match) => {
+    const at = match.index - removed;
+    removed += match[0].length;
+    return at;
+  });
+  for (const at of places.sort((a, b) => b - a)) {
+    const rest = out.slice(at);
+    const paragraph = /<w:p>|<w:p /.exec(rest);
+    const table = rest.indexOf('<w:tbl>');
+    if (!paragraph || (table >= 0 && table < paragraph.index)) {
+      if (table < 0) continue;
+      out = `${out.slice(0, at + table)}<w:p><w:r><w:br w:type="page" /></w:r></w:p>${out.slice(at + table)}`;
+      continue;
+    }
+    const open = at + paragraph.index + rest.slice(paragraph.index).indexOf('>') + 1;
+    if (out.startsWith('<w:pPr>', open)) {
+      const props = open + '<w:pPr>'.length;
+      const lead = /^(<w:pStyle [^>]*\/>)?(<w:keepNext\s*\/>)?(<w:keepLines\s*\/>)?/.exec(out.slice(props))[0];
+      out = `${out.slice(0, props + lead.length)}<w:pageBreakBefore />${out.slice(props + lead.length)}`;
+    } else {
+      out = `${out.slice(0, open)}<w:pPr><w:pageBreakBefore /></w:pPr>${out.slice(open)}`;
+    }
+  }
   return out;
 }
 

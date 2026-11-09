@@ -21,7 +21,7 @@ import { GuardedBrowser } from '../guarded-browser.mjs';
 import { startEgressProxy, trustedOriginKeys } from '../egress-guard.mjs';
 import { createExportApp, documentProblem } from '../export-app.mjs';
 import {
-  DOCX_MAGIC, DOCX_TYPE, rightToLeftTables, WordConverter, WordFailed,
+  DOCX_MAGIC, DOCX_TYPE, pageBreaks, PAGE_BREAK_BOOKMARK, rightToLeftTables, WordConverter, WordFailed,
 } from '../export-docx.mjs';
 import {
   createExportRenderer, exportRequestAllowed, ExportBusy, ExportFailed, ExportTimeout, printOrigin, printPageUrl,
@@ -43,8 +43,8 @@ function listen(server) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 }
 
-/** Every page's text runs, in the order the PDF draws them, joined by `separator`. */
-async function pdfText(buffer, separator = '') {
+/** Each page's text runs, in the order the PDF draws them, joined by `separator`: one string per page. */
+async function pdfPages(buffer, separator = '') {
   const task = pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false });
   const pdf = await task.promise;
   const pages = [];
@@ -53,7 +53,12 @@ async function pdfText(buffer, separator = '') {
     pages.push(content.items.map((item) => item.str).join(separator));
   }
   await task.destroy();
-  return pages.join('\n');
+  return pages;
+}
+
+/** Every page's text runs, in the order the PDF draws them, joined by `separator`. */
+async function pdfText(buffer, separator = '') {
+  return (await pdfPages(buffer, separator)).join('\n');
 }
 
 // Compared without spaces and in compatibility form, so line breaks and Arabic presentation forms (the shaped
@@ -128,8 +133,10 @@ const WORD_PARTS = `<h2>Units</h2>
 <div style="display:none">Hidden control</div>`;
 
 describe('documentProblem', () => {
-  test('accepts a document of outputs', () => {
+  test('accepts a document of outputs, an answer key among them', () => {
     assert.equal(documentProblem({ document: DOC }), null);
+    const key = { kind: 'answer_key', title: 'Answers', chunks: [{ type: 'response', content: '1. B' }] };
+    assert.equal(documentProblem({ document: { ...DOC, outputs: [...DOC.outputs, key] } }), null);
   });
   test('refuses a URL in place of outputs, unknown kinds, empty lists and chunks with no type', () => {
     assert.match(documentProblem({ url: 'http://169.254.169.254/' }), /document/);
@@ -702,6 +709,34 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     assert.ok(lines.every((l) => !l.includes('Photosynthesis') && !l.includes('Kinematics')));
   });
 
+  test('an answer key starts a page of its own after the questions, in the PDF and in the Word file', async () => {
+    // ops I-1313, S-790: questions put their answers at the back (the backend sends the key as an "answer_key"
+    // output; the print page starts it on a new page, and the Word file follows the page's break).
+    const doc = {
+      title: 'Derivatives practice',
+      language: 'en',
+      outputs: [
+        { kind: 'answer', title: null, chunks: [{ type: 'response', content: '1. Differentiate x cubed.\n\n2. Differentiate sine x.' }] },
+        { kind: 'answer_key', title: 'Answers', chunks: [{ type: 'response', content: '1. Three x squared.\n\n2. Cosine x.' }] },
+      ],
+    };
+    const pdf = await renderer('/export-print', collectingLog().log)(doc);
+    const pages = (await pdfPages(pdf.file)).map(squash);
+    assert.equal(pages.length, 2, pages.join(' | '));
+    assert.ok(pages[0].includes(squash('Differentiate sine x.')) && !pages[0].includes('Answers'), pages[0]);
+    assert.ok(pages[1].startsWith('Answers') && pages[1].includes(squash('Three x squared.')), pages[1]);
+
+    const word = await renderer('/export-print', collectingLog().log)(doc, 'docx');
+    const { xml } = docxParts(word.file);
+    const paragraphs = docxParagraphs(xml);
+    const breaking = paragraphs.filter((p) => p.includes('<w:pageBreakBefore />'));
+    assert.deepEqual(breaking.map(paragraphText), ['Answers']);
+    assert.ok(/w:val="Heading2"/.test(breaking[0]), 'the key keeps its heading');
+    assert.ok(paragraphs.findIndex((p) => paragraphText(p) === 'Answers')
+      > paragraphs.findIndex((p) => paragraphText(p).includes('Differentiate sine x.')));
+    assert.ok(!xml.includes(PAGE_BREAK_BOOKMARK), 'no bookmark of ours is left in the file');
+  });
+
   test('a Word file of an Arabic answer: its paragraphs and list run right to left, an English one left to right', async () => {
     const { log } = collectingLog();
     const doc = {
@@ -823,6 +858,40 @@ describe('WordConverter (pandoc in a worker thread)', { timeout: 60_000 }, () =>
     } finally {
       await word.close();
     }
+  });
+});
+
+describe('pageBreaks', () => {
+  const mark = (id, n) => `<w:bookmarkStart w:id="${id}" w:name="${PAGE_BREAK_BOOKMARK}${n}" />`;
+  const p = (text, props = '') => `<w:p>${props}<w:r><w:t xml:space="preserve">${text}</w:t></w:r></w:p>`;
+
+  test('the first paragraph of a part the page starts on a new page starts a new page; our bookmark goes', () => {
+    const heading = p('Answers', '<w:pPr><w:pStyle w:val="Heading2" /><w:bidi /></w:pPr>');
+    const xml = `<w:body>${p('Q1')}${mark(10, 0)}<w:bookmarkStart w:id="9" w:name="answers" />${heading}`
+      + `<w:bookmarkEnd w:id="9" />${p('A1')}<w:bookmarkEnd w:id="10" /></w:body>`;
+    assert.equal(pageBreaks(xml), `<w:body>${p('Q1')}<w:bookmarkStart w:id="9" w:name="answers" />`
+      + `${heading.replace('<w:pStyle w:val="Heading2" />', '<w:pStyle w:val="Heading2" /><w:pageBreakBefore />')}`
+      + `<w:bookmarkEnd w:id="9" />${p('A1')}</w:body>`);
+  });
+
+  test('in OOXML order: after the style, keepNext and keepLines; a paragraph with no properties gets them', () => {
+    const kept = p('A', '<w:pPr><w:pStyle w:val="Heading2" /><w:keepNext /><w:keepLines /><w:jc w:val="left" /></w:pPr>');
+    assert.ok(pageBreaks(`${mark(1, 0)}${kept}<w:bookmarkEnd w:id="1" />`)
+      .includes('<w:keepLines /><w:pageBreakBefore /><w:jc'));
+    assert.equal(pageBreaks(`${mark(1, 0)}${p('A')}<w:bookmarkEnd w:id="1" />`),
+      p('A', '<w:pPr><w:pageBreakBefore /></w:pPr>'));
+  });
+
+  test('a part that opens with a table gets a page break before it', () => {
+    const table = `<w:tbl><w:tblPr /><w:tr><w:tc>${p('a')}</w:tc></w:tr></w:tbl>`;
+    assert.equal(pageBreaks(`${p('Q')}${mark(3, 0)}${table}<w:bookmarkEnd w:id="3" />`),
+      `${p('Q')}<w:p><w:r><w:br w:type="page" /></w:r></w:p>${table}`);
+  });
+
+  test('other bookmarks, text that names ours, and a file with none are left as they are', () => {
+    const xml = `<w:bookmarkStart w:id="2" w:name="answers" />${p(`${PAGE_BREAK_BOOKMARK}0 &lt;w:bookmarkStart&gt;`)}`
+      + '<w:bookmarkEnd w:id="2" />';
+    assert.equal(pageBreaks(xml), xml);
   });
 });
 
