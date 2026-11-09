@@ -6,11 +6,12 @@
 // opens it with the output's language appended (/en, /ar), never a URL from a request. A print page on this
 // machine (http://localhost:3000/export-print, local development) is the one origin the egress guard lets
 // through without its address check, by its exact host and port; every other loopback or private address stays
-// refused. RENDER_API_KEY: the key the backend sends, always required.
+// refused. The guard runs HTTPS-only here: public addresses on port 443 and nothing else (export-renderer.mjs
+// says what the page may request). RENDER_API_KEY: the key the backend sends, always required.
 import { GuardedBrowser } from './guarded-browser.mjs';
 import { listenWhenReady } from './check-app.mjs';
 import { createExportApp } from './export-app.mjs';
-import { createExportRenderer, printOrigin } from './export-renderer.mjs';
+import { createExportRenderer, ExportFailed, printOrigin } from './export-renderer.mjs';
 
 const printUrl = process.env.EXPORT_PRINT_URL || '';
 const origin = printOrigin(printUrl);
@@ -29,7 +30,7 @@ if (trusted.length) {
 // refusals name no host.
 const browser = new GuardedBrowser({
   killable: true,
-  guard: { logHosts: false, trusted },
+  guard: { logHosts: false, trusted, httpsOnly: true },
   onStuckLaunch: () => {
     // eslint-disable-next-line no-console
     console.error('[EXPORT_PDF] restarting the instance: Chromium did not start');
@@ -38,7 +39,7 @@ const browser = new GuardedBrowser({
 });
 const app = createExportApp({
   renderPdf: origin ? createExportRenderer(browser, { printUrl }) : async () => {
-    throw new Error('unconfigured');
+    throw new ExportFailed('config', 'unconfigured');
   },
 });
 

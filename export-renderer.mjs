@@ -1,19 +1,21 @@
-// A PDF of saved outputs (a chat answer, a summary), drawn by the web app's own print page (ops I-1313).
+// A PDF of saved outputs (a chat answer first), drawn by the web app's own print page (ops I-1313).
 //
 // The caller (the backend) sends the outputs as data, never a URL: the page this renderer opens is its own
 // configuration (EXPORT_PRINT_URL, export-server.mjs), the web app's print route. The handshake with that page:
-//   1. The page mounts, defines window.__youlearnExportRender and sets <html data-export-state="waiting">.
-//   2. The renderer calls window.__youlearnExportRender(document) with the outputs.
-//   3. The page draws them with the same components the chat and the summary view use (Markdown, math,
-//      diagrams, images, right-to-left text), waits for its fonts, images and diagrams, and sets
-//      data-export-state="ready" (or "failed"), with counts in data-export-diagrams and data-export-images-failed.
-//   4. The renderer prints the page to an A4 PDF.
+//   1. The page loads and defines window.__youlearnExportRender(document).
+//   2. The renderer calls it with the outputs. It draws them with the same components the chat uses (Markdown,
+//      math, diagrams, images, right-to-left text), waits for its fonts, images and diagrams, and resolves with
+//      { diagrams, imagesFailed } (counts), or rejects.
+//   3. The renderer prints the page to an A4 PDF.
 // The viewport is the A4 page's printable width, so what the page lays out on screen is what prints.
 //
-// The page runs in the GuardedBrowser (guarded-browser.mjs): the sandbox on and every request through the egress
-// guard, so an image or a link in a student's output reaches public addresses only. The context has no cookies:
-// the page is signed in as nobody. One render at a time per instance; a hard deadline ends a render that runs too
-// long. Logs hold codes, counts and times only, never the outputs' text, titles or the URL.
+// What the page may reach is only what a print needs. In the browser (exportRequestAllowed): any request to the
+// print page's own origin (its scripts, styles, fonts), and images over HTTPS on port 443; every other request is
+// aborted and WebSockets are closed. Under that, the GuardedBrowser (guarded-browser.mjs) keeps the sandbox on
+// and sends every request through the egress guard, which the export service runs HTTPS-only: public addresses on
+// port 443, never an internal one. The context has no cookies: the page is signed in as nobody. One render at a
+// time per instance; a hard deadline ends a render that runs too long. Logs hold codes, counts and times only,
+// never the outputs' text, titles or a URL.
 
 import { errorCode } from './request-errors.mjs';
 
@@ -41,6 +43,11 @@ const FOOTER = '<div style="width:100%;font-size:8px;color:#666;text-align:cente
 const LANGUAGE_TAG = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/;
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 
+/** The language tag to print in: `language` when it is a tag, else English. */
+export function languageTag(language) {
+  return typeof language === 'string' && LANGUAGE_TAG.test(language) ? language : 'en';
+}
+
 /** The print page's host and port, and whether it is on this machine; null when `url` is not http(s). */
 export function printOrigin(url) {
   let parsed;
@@ -51,17 +58,34 @@ export function printOrigin(url) {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
   const port = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
-  return { host: parsed.hostname, port, loopback: LOOPBACK_HOSTS.has(parsed.hostname) };
+  return { origin: parsed.origin, host: parsed.hostname, port, loopback: LOOPBACK_HOSTS.has(parsed.hostname) };
 }
 
 /** The print page for one language: EXPORT_PRINT_URL/<language>, English for anything that is not a tag. */
 export function printPageUrl(printUrl, language) {
-  const tag = typeof language === 'string' && LANGUAGE_TAG.test(language) ? language : 'en';
   const url = new URL(String(printUrl));
-  url.pathname = `${url.pathname.replace(/\/+$/, '')}/${tag}`;
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/${languageTag(language)}`;
   url.search = '';
   url.hash = '';
   return url.toString();
+}
+
+/**
+ * Whether the print page may make this request: anything from the print page's own origin, and images over
+ * HTTPS on the default port. Everything else (a fetch, a script, a frame or a font from anywhere else, plain
+ * http, another port) is aborted before it leaves the browser.
+ * @param {{ url: string, resourceType: string }} request
+ * @param {string} allowedOrigin the print page's origin (new URL(printUrl).origin)
+ */
+export function exportRequestAllowed({ url, resourceType }, allowedOrigin) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.origin === allowedOrigin) return true;
+  return resourceType === 'image' && parsed.protocol === 'https:' && parsed.port === '';
 }
 
 export class ExportBusy extends Error {
@@ -96,29 +120,35 @@ function within(promise, ms) {
   ]).finally(() => clearTimeout(timer));
 }
 
+const isCount = (value) => Number.isInteger(value) && value >= 0;
+
 /**
  * A renderPdf bound to one GuardedBrowser and one print page.
  * @param {import('./guarded-browser.mjs').GuardedBrowser} guardedBrowser
- * @param {{ printUrl: string, options?: object, log?: Console }} config
+ * @param {{ printUrl: string, options?: Partial<typeof EXPORT_DEFAULTS>, log?: Console }} config
  */
 export function createExportRenderer(guardedBrowser, { printUrl, options = {}, log = console }) {
   const o = { ...EXPORT_DEFAULTS, ...options };
+  const allowedOrigin = new URL(printUrl).origin;
   let busy = false;
 
   /**
-   * Print `document` ({ title, language, direction, outputs: [{ kind, title, chunks }] }) to a PDF.
-   * @returns {Promise<{ pdf: Buffer, diagrams: number, imagesFailed: number, ms: number, warm: boolean }>}
+   * Print `doc` ({ title, language, direction, outputs: [{ kind, title, chunks }] }) to a PDF.
+   * @returns {Promise<{ pdf: Buffer, diagrams: number, imagesFailed: number, blocked: number, ms: number, warm: boolean }>}
    * @throws {ExportBusy} another export is running here
    * @throws {ExportTimeout} the deadline passed
    * @throws {ExportFailed} anything else, by stage and code only
    */
-  return async function renderPdf(document) {
+  return async function renderPdf(doc) {
     if (busy) throw new ExportBusy();
     busy = true;
     const t0 = Date.now();
     const warm = guardedBrowser.running();
+    const language = languageTag(doc.language);
     let stage = 'launch';
     let context = null;
+    // Requests the page made that a print does not need (exportRequestAllowed), aborted in the browser.
+    let blocked = 0;
     // Set when the render ends (the deadline included): a context that opens after that is closed at once.
     let ended = false;
     let timer;
@@ -132,36 +162,45 @@ export function createExportRenderer(guardedBrowser, { printUrl, options = {}, l
           viewport: { ...o.viewport },
           // Print colours and backgrounds as the page sets them, light: the PDF is paper.
           colorScheme: 'light',
-          locale: typeof document.language === 'string' && document.language ? document.language : undefined,
+          locale: language,
         });
         if (ended) {
           await within(opened.close(), o.teardownMs).catch(() => {});
           throw new ExportTimeout(o.deadlineMs);
         }
         context = opened;
+        await context.routeWebSocket(/.*/, (ws) => ws.close());
+        await context.route('**/*', (route) => {
+          const request = route.request();
+          if (exportRequestAllowed({ url: request.url(), resourceType: request.resourceType() }, allowedOrigin)) {
+            return route.continue();
+          }
+          blocked += 1;
+          return route.abort('blockedbyclient');
+        });
         const page = await context.newPage();
         stage = 'load';
-        await page.goto(printPageUrl(printUrl, document.language), {
-          waitUntil: 'domcontentloaded', timeout: o.gotoTimeoutMs,
-        });
+        await page.goto(printPageUrl(printUrl, language), { waitUntil: 'domcontentloaded', timeout: o.gotoTimeoutMs });
         await page.waitForFunction(
-          () => document.documentElement.dataset.exportState === 'waiting',
+          () => typeof window.__youlearnExportRender === 'function',
           undefined,
           { timeout: o.gotoTimeoutMs },
         );
         stage = 'draw';
-        await page.evaluate((doc) => window.__youlearnExportRender(doc), document);
-        await page.waitForFunction(
-          () => ['ready', 'failed'].includes(document.documentElement.dataset.exportState),
-          undefined,
-          { timeout: 0, polling: 100 },
-        );
-        const drawn = await page.evaluate(() => ({
-          state: document.documentElement.dataset.exportState,
-          diagrams: Number(document.documentElement.dataset.exportDiagrams) || 0,
-          imagesFailed: Number(document.documentElement.dataset.exportImagesFailed) || 0,
-        }));
-        if (drawn.state !== 'ready') throw new ExportFailed('draw', 'page_failed');
+        let drawn;
+        try {
+          drawn = await page.evaluate(async (outputs) => {
+            const counts = await window.__youlearnExportRender(outputs);
+            await document.fonts.ready;
+            return counts;
+          }, doc);
+        } catch {
+          // Not the error itself: its message is the page's, which can quote the outputs.
+          throw new ExportFailed('draw', 'page_failed');
+        }
+        if (!drawn || !isCount(drawn.diagrams) || !isCount(drawn.imagesFailed)) {
+          throw new ExportFailed('draw', 'bad_answer');
+        }
         stage = 'print';
         const pdf = await page.pdf({
           format: o.format,
@@ -177,17 +216,17 @@ export function createExportRenderer(guardedBrowser, { printUrl, options = {}, l
       work.catch(() => {});
       const result = await Promise.race([work, expired]);
       const ms = Date.now() - t0;
-      log.info(`[EXPORT_PDF] ok outputs=${document.outputs.length} diagrams=${result.diagrams} `
-        + `images_failed=${result.imagesFailed} bytes=${result.pdf.length} warm=${warm} ms=${ms}`);
-      return { ...result, ms, warm };
+      log.info(`[EXPORT_PDF] ok outputs=${doc.outputs.length} diagrams=${result.diagrams} `
+        + `images_failed=${result.imagesFailed} blocked=${blocked} bytes=${result.pdf.length} warm=${warm} ms=${ms}`);
+      return { ...result, blocked, ms, warm };
     } catch (error) {
       if (error instanceof ExportTimeout) {
-        log.warn(`[EXPORT_PDF] timed_out stage=${stage} warm=${warm} ms=${Date.now() - t0}`);
+        log.warn(`[EXPORT_PDF] timed_out stage=${stage} blocked=${blocked} warm=${warm} ms=${Date.now() - t0}`);
         throw error;
       }
       // The stage and a code only: a Playwright error quotes the URL and text the page threw.
       const code = error instanceof ExportFailed ? error.code : errorCode(error);
-      log.error(`[EXPORT_PDF] failed stage=${stage} code=${code} warm=${warm} ms=${Date.now() - t0}`);
+      log.error(`[EXPORT_PDF] failed stage=${stage} code=${code} blocked=${blocked} warm=${warm} ms=${Date.now() - t0}`);
       throw error instanceof ExportFailed ? error : new ExportFailed(stage, code);
     } finally {
       ended = true;

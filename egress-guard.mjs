@@ -55,6 +55,7 @@ const RANGE_REASONS = {
 };
 
 const PROXY_SOCKET_IDLE_MS = 60_000;
+const HTTPS_PORT = 443;
 const PROXY_CONNECT_TIMEOUT_MS = 15_000;
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'];
 
@@ -260,13 +261,16 @@ function statusFor(error) {
  * production uses the system resolver and net.connect. `logHosts` false leaves
  * the host out of every refusal line. `trusted`: exact origins let through
  * without the address check (trustedOriginKeys; the export service's local
- * print page only).
+ * print page only). `httpsOnly` (the export service): only what a print needs,
+ * HTTPS on port 443 (images and the public print page); plain http and every
+ * other port are refused before any lookup, except a trusted origin.
  * @returns {Promise<{ server: http.Server, url: string, port: number, refusals: () => number, close: () => Promise<void> }>}
  */
 export async function startEgressProxy({
-  lookup = defaultLookup, connect = defaultConnect, log = console, logHosts = true, trusted = [],
+  lookup = defaultLookup, connect = defaultConnect, log = console, logHosts = true, trusted = [], httpsOnly = false,
 } = {}) {
   const deps = { lookup, connect, log, logHosts, trusted: trustedOriginKeys(trusted) };
+  const isTrusted = (host, port) => deps.trusted.has(originKey(host, port));
   let refusals = 0;
   const counted = (error) => {
     if (error instanceof UrlRefused) refusals += 1;
@@ -288,14 +292,15 @@ export async function startEgressProxy({
       res.writeHead(400).end();
       return;
     }
-    if (target.protocol !== 'http:') {
+    const port = Number(target.port || 80);
+    if (target.protocol !== 'http:' || (httpsOnly && !isTrusted(target.hostname, port))) {
       counted(refuse('scheme', target.hostname, log, logHosts));
       res.writeHead(403).end();
       return;
     }
     let upstreamSocket;
     try {
-      upstreamSocket = await connectChecked(target.hostname, Number(target.port || 80), deps);
+      upstreamSocket = await connectChecked(target.hostname, port, deps);
     } catch (error) {
       counted(error);
       if (!res.headersSent) res.writeHead(statusFor(error)).end();
@@ -351,6 +356,11 @@ export async function startEgressProxy({
     if (!target) {
       counted(refuse('malformed', '', log));
       clientSocket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
+      return;
+    }
+    if (httpsOnly && target.port !== HTTPS_PORT && !isTrusted(target.host, target.port)) {
+      counted(refuse('port', target.host, log, logHosts));
+      clientSocket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
       return;
     }
     let upstream;

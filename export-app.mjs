@@ -41,6 +41,9 @@ export function documentProblem(body) {
     if (!Array.isArray(output.chunks) || output.chunks.length > MAX_CHUNKS) {
       return `Each output's "chunks" must be an array of at most ${MAX_CHUNKS}`;
     }
+    if (!output.chunks.every((chunk) => chunk && typeof chunk === 'object' && typeof chunk.type === 'string')) {
+      return 'Each chunk must be an object with a string "type"';
+    }
   }
   return null;
 }
@@ -61,13 +64,16 @@ export function createExportApp({ renderPdf, key = process.env.RENDER_API_KEY ||
     const problem = documentProblem(req.body);
     if (problem) return res.status(400).json({ success: false, error: problem });
     try {
-      const { pdf, diagrams, imagesFailed, ms } = await renderPdf(req.body.document);
+      const { pdf, diagrams, imagesFailed, blocked, ms } = await renderPdf(req.body.document);
       res.set({
         'Content-Type': 'application/pdf',
         'Content-Length': String(pdf.length),
         // Counts and times for the caller's logs; no text from the outputs.
         'X-Export-Diagrams': String(diagrams),
         'X-Export-Images-Failed': String(imagesFailed),
+        'X-Export-Blocked': String(blocked),
+        // The bytes are the student's output: no cache on the way keeps a copy.
+        'Cache-Control': 'no-store',
         'X-Export-Ms': String(ms),
       });
       return res.status(200).end(pdf);
