@@ -229,7 +229,16 @@ export function rightToLeftTables(xml) {
   }
   const marks = [];
   for (const [start, end] of tables) {
-    const paragraphs = xml.slice(start, end).split(/(?=<w:p>|<w:p )/).slice(1).filter((p) => p.includes('<w:t'));
+    // The table's own paragraphs: a table nested in it is judged on its own.
+    let own = '';
+    let from = start;
+    for (const [innerStart, innerEnd] of tables.filter(([a, b]) => a > start && b < end).sort((x, y) => x[0] - y[0])) {
+      if (innerStart < from) continue;
+      own += xml.slice(from, innerStart);
+      from = innerEnd;
+    }
+    own += xml.slice(from, end);
+    const paragraphs = own.split(/(?=<w:p>|<w:p )/).slice(1).filter((p) => p.includes('<w:t'));
     const rtl = paragraphs.filter((p) => /<w:bidi\s*\/>/.test(p.split('</w:pPr>')[0])).length;
     if (!paragraphs.length || rtl * 2 <= paragraphs.length) continue;
     const props = xml.indexOf('<w:tblPr>', start);

@@ -842,6 +842,15 @@ describe('rightToLeftTables', () => {
     }
   });
 
+  test('a table nested in another is judged on its own paragraphs, and so is its parent', () => {
+    const inner = table([cell('النواة', true), cell('الغشاء', true), cell('الخلية', true)]);
+    const outer = `<w:tbl><w:tblPr><w:tblStyle w:val="Table" /></w:tblPr><w:tr><w:tc><w:p><w:r><w:t>Cell</w:t></w:r></w:p>`
+      + `${inner}<w:p><w:r><w:t>Parts</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`;
+    const out = rightToLeftTables(outer);
+    assert.equal((out.match(/<w:bidiVisual \/>/g) || []).length, 1);
+    assert.ok(out.startsWith('<w:tbl><w:tblPr><w:tblStyle w:val="Table" /></w:tblPr>'), 'the English parent stays left to right');
+  });
+
   test('each table is judged on its own; a cell\'s text can\'t open a table', () => {
     const arabic = table([cell('النواة', true)]);
     const english = table([cell('&lt;w:tbl&gt; Nucleus', false)]);
