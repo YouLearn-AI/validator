@@ -717,7 +717,8 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
     const result = await renderer('/export-print', log)(doc, 'docx');
     const paragraphs = docxParagraphs(docxParts(result.file).xml);
     const find = (text) => paragraphs.find((p) => paragraphText(p) === text);
-    for (const paragraph of [...ARABIC, 'النواة', 'الغشاء']) {
+    // The title too: the page sets it dir="auto", which pandoc keeps on a heading unless the file says rtl.
+    for (const paragraph of ['الخلية', ...ARABIC, 'النواة', 'الغشاء']) {
       const found = find(paragraph);
       assert.ok(found, paragraph);
       assert.ok(found.includes('<w:bidi />') && found.includes('<w:rtl />'), paragraph);

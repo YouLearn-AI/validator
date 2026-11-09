@@ -153,6 +153,11 @@ export function wordSource(limits) {
     for (const name of ['data-export-hidden', 'data-export-picture', 'data-export-dir']) element.removeAttribute(name);
   }
   copy.querySelectorAll('[data-export-hidden], script, style, link, noscript, template').forEach((e) => e.remove());
+  // dir="auto" is the browser's to resolve: pandoc keeps it on a heading, where it outweighs the direction the
+  // heading's wrapper sets below, and Word then sets an Arabic title left to right. The wrappers carry it instead.
+  for (const element of copy.querySelectorAll('[dir]')) {
+    if (!['ltr', 'rtl'].includes(element.getAttribute('dir'))) element.removeAttribute('dir');
+  }
   // A button is a control and is left out, unless it holds a picture: the chat draws an image whiteboard's pictures
   // as buttons that open a viewer (image-whiteboard.tsx); the picture stays, its button goes (Codex review).
   for (const button of copy.querySelectorAll('button')) {
