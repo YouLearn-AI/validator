@@ -7,8 +7,8 @@
 // the page checks, in the same call, that it is still on a listed origin. The renderer waits for the page's ready or
 // error signal, then returns page.pdf(). A navigation request (the page, a frame or a popup) to an origin off the
 // list is aborted before it is sent, and one in the main frame ends the render. A server redirect's next hop is not
-// seen before it is sent (Playwright routes only a redirect's first request); it carries no document and no
-// cookies, and a main frame that lands off the list ends the render.
+// routed (Playwright routes only a redirect's first request), so it is sent; it carries no document and no cookies,
+// and the render ends as soon as the main frame asks for it.
 //
 // One render at a time per instance; a hard deadline ends a render that runs too long. Logs carry codes, counts
 // and times only: the document is a student's summary, and page errors and console output are never logged.
@@ -216,12 +216,9 @@ export function createPdfRenderer(guardedBrowser, { origins, options = {}, log =
         opening.then((c) => { if (expired) c.close().catch(() => {}); }, () => {});
         context = await step(opening);
         const page = await step(context.newPage());
-        // A navigation off the listed origins is aborted before it is sent: the page's, a frame's or a popup's.
-        // In the main frame it also ends the render.
-        await step(context.route('**/*', (route) => {
-          const request = route.request();
-          // fallback(): any other handler still runs, and with none the request goes on through the egress guard.
-          if (!request.isNavigationRequest() || allowed(request.url(), origins)) return route.fallback().catch(() => {});
+        // A navigation request off the listed origins; in the main frame it ends the render.
+        const offList = (request) => {
+          if (!request.isNavigationRequest() || allowed(request.url(), origins)) return false;
           let main = false;
           try {
             main = request.frame() === page.mainFrame();
@@ -232,8 +229,15 @@ export function createPdfRenderer(guardedBrowser, { origins, options = {}, log =
             strayed = true;
             onStray();
           }
-          return route.abort('blockedbyclient').catch(() => {});
-        }));
+          return true;
+        };
+        // Aborted before it is sent: the page's, a frame's or a popup's. fallback(): any other handler still runs,
+        // and with none the request goes on through the egress guard.
+        await step(context.route('**/*', (route) => (
+          offList(route.request()) ? route.abort('blockedbyclient') : route.fallback()
+        ).catch(() => {})));
+        // A redirect's next hop is never routed; its request event still names it.
+        page.on('request', offList);
         // No second window: a popup is closed as it opens.
         context.on('page', (other) => { if (other !== page) other.close().catch(() => {}); });
         page.on('pageerror', () => { pageErrors += 1; });

@@ -230,9 +230,13 @@ describe('/render-pdf', { timeout: 180_000 }, () => {
     assert.ok(r.bytes.length > 1000);
     assert.ok(lines.some((l) => /^\[RENDER_PDF\] status=ok chunks=7 bytes=\d+ /.test(l)), lines.join('\n'));
     if (hasPdftotext()) {
-      // The PDF goes in on stdin: no file is written.
-      const text = execFileSync('pdftotext', ['-', '-'], { input: r.bytes, encoding: 'utf8' }).replace(/\s+/g, ' ');
-      for (const paragraph of PARAGRAPHS) assert.ok(text.includes(paragraph), paragraph);
+      // The PDF goes in on stdin: no file is written. -raw keeps the drawing order: the default layout mode moves a
+      // line's text around a citation drawn in a CJK font. The default mode reads the Arabic paragraph's words.
+      const read = (args) => execFileSync('pdftotext', [...args, '-', '-'], { input: r.bytes, encoding: 'utf8' })
+        .replace(/\s+/g, ' ');
+      const raw = read(['-raw']);
+      const text = read([]);
+      for (const paragraph of PARAGRAPHS) assert.ok(raw.includes(paragraph), paragraph);
       assert.ok(text.includes('Diagram: Fluid mosaic'));
       assert.ok(!text.includes('Not printed'));
       assert.ok(text.includes('الدهون'), 'the Arabic paragraph');
