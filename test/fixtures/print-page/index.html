@@ -8,7 +8,8 @@
   A fixture print page for print-page-contract.mjs, not the web app's (phase 2 builds that one). It does what the
   contract asks with a tiny Markdown subset: headings, paragraphs and pipe tables. Consecutive text and citation
   chunks are merged into one run first, as the web's groupMessages does, so text after a citation prints.
-  ?mode= picks a misbehaviour for the tests: error, never, nocontract, navigate, throw, popup, slowcontract.
+  ?mode= picks a misbehaviour for the tests: error, never, nocontract, navigate, throw, popup, slowcontract,
+  hostleak (an image whose hostname carries text, which the egress guard refuses).
 -->
 <style>
   @page { size: Letter; margin: 0.75in; }
@@ -114,6 +115,13 @@
     root.dataset.received = JSON.stringify(counts);
     console.log('CONSOLE-SECRET-8830', input.title);
     if (mode === 'never') return;
+    if (mode === 'hostleak') {
+      const img = document.createElement('img');
+      const settled = new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; });
+      img.src = 'http://host-secret-4471.localhost/a.png';
+      doc.appendChild(img);
+      await settled;
+    }
     await document.fonts.ready;
     signal('ready');
   }

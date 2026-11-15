@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { GuardedBrowser } from '../guarded-browser.mjs';
 import { createPdfApp } from '../pdf-app.mjs';
 import {
-  PDF_DEFAULTS, PageRefused, checkPageUrl, createPdfRenderer, pageInput, parseOrigins,
+  PDF_DEFAULTS, PDF_GUARD, PageRefused, checkPageUrl, createPdfRenderer, pageInput, parseOrigins,
 } from '../pdf-renderer.mjs';
 
 const FAKE_PUBLIC = '93.184.216.34';
@@ -107,17 +107,22 @@ describe('/render-pdf', { timeout: 180_000 }, () => {
   let fixturePort;
   let fixture;
   const hits = [];
+  const hosts = [];
+  const elsewhere = () => hosts.filter((host) => host === 'elsewhere.test').length;
   let browser;
   let guardLog;
   const servers = [];
 
+  // print.test is the listed origin; elsewhere.test is a second public origin that is not listed. Both are served by
+  // the fixture server, which records each request's host, so a test can show nothing reached elsewhere.test.
+  const FAKE_HOSTS = new Set(['print.test', 'elsewhere.test']);
   const lookup = async (host) => {
-    if (host === 'print.test') return [{ address: FAKE_PUBLIC, family: 4 }];
+    if (FAKE_HOSTS.has(host)) return [{ address: FAKE_PUBLIC, family: 4 }];
     return dns.lookup(host, { all: true, verbatim: true });
   };
-  // Connections to print.test go to the fixture server; the socket reports the fake public address.
+  // Connections to the fake hosts go to the fixture server; the socket reports the fake public address.
   const connect = (options) => {
-    if (options.host !== 'print.test') return net.connect(options);
+    if (!FAKE_HOSTS.has(options.host)) return net.connect(options);
     const socket = net.connect({
       ...options,
       port: fixturePort,
@@ -137,7 +142,7 @@ describe('/render-pdf', { timeout: 180_000 }, () => {
     const collected = collectingLog();
     const origins = new Set([`http://print.test:${fixturePort}`]);
     const renderPdf = createPdfRenderer(browser, {
-      origins, options, log: collected.log, checkOptions: { lookup, log: collected.log },
+      origins, options, log: collected.log, checkOptions: { ...PDF_GUARD, lookup, log: collected.log },
     });
     const server = http.createServer(createPdfApp({ renderPdf, key, log: collected.log }));
     const port = await listen(server);
@@ -168,6 +173,7 @@ describe('/render-pdf', { timeout: 180_000 }, () => {
   before(async () => {
     fixture = http.createServer((req, res) => {
       hits.push(req.url);
+      hosts.push(String(req.headers.host).split(':')[0]);
       if (req.url.startsWith('/print/summary')) {
         return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(FIXTURE);
       }
@@ -176,7 +182,7 @@ describe('/render-pdf', { timeout: 180_000 }, () => {
     });
     fixturePort = await listen(fixture);
     guardLog = collectingLog();
-    browser = new GuardedBrowser({ guard: { lookup, connect }, log: guardLog.log });
+    browser = new GuardedBrowser({ guard: { ...PDF_GUARD, lookup, connect }, log: guardLog.log });
   });
 
   after(async () => {
@@ -259,20 +265,29 @@ describe('/render-pdf', { timeout: 180_000 }, () => {
     assert.deepEqual([r.json.code, r.json.stage, r.json.failure], ['failed', 'contract', 'timeout']);
   });
 
-  test('a page that navigates away, or a redirect off the origins, gets no document and no PDF', async () => {
+  test('a page that navigates away is stopped before the request leaves, and gets no PDF', async () => {
     const { base } = await startApp();
+    const before = elsewhere();
     const away = await post(base, { url: page('navigate'), document: summary });
     assert.equal(away.status, 502);
     assert.equal(away.json.code, 'page_navigated');
+    assert.equal(elsewhere(), before, 'elsewhere.test was never asked');
+  });
+
+  test('a redirect off the origins gets no document and no PDF', async () => {
+    // Playwright routes only a redirect's first request, so the hop itself is sent (with no document, no cookies).
+    const { base } = await startApp();
     const redirected = await post(base, { url: `http://print.test:${fixturePort}/redirect-away`, document: summary });
     assert.equal(redirected.status, 502);
     assert.equal(redirected.json.code, 'page_navigated');
   });
 
-  test('a popup is closed and the print goes on', async () => {
+  test('a popup is stopped before its request leaves, and the print goes on', async () => {
     const { base } = await startApp();
+    const before = elsewhere();
     const r = await post(base, { url: page('popup'), document: summary });
     assert.equal(r.status, 200);
+    assert.equal(elsewhere(), before, 'elsewhere.test was never asked');
   });
 
   test('one render at a time: a second one meanwhile is a 503', async () => {
@@ -290,8 +305,11 @@ describe('/render-pdf', { timeout: 180_000 }, () => {
     const { base, lines } = await startApp();
     assert.equal((await post(base, { url: page('throw'), document: summary })).status, 200);
     assert.equal((await post(base, { url: page('error'), document: summary })).status, 502);
+    assert.equal((await post(base, { url: page('hostleak'), document: summary })).status, 200);
+    assert.ok(guardLog.lines.some((l) => l.startsWith('[EGRESS_REFUSED] reason=loopback host=-')), guardLog.lines.join('\n'));
     const all = [...lines, ...guardLog.lines].join('\n');
-    for (const secret of ['TITLE-SECRET-3307', 'PAGE-ERROR-SECRET-5521', 'CONSOLE-SECRET-8830', 'Phospholipids', 'print/summary']) {
+    for (const secret of ['TITLE-SECRET-3307', 'PAGE-ERROR-SECRET-5521', 'CONSOLE-SECRET-8830', 'Phospholipids', 'print/summary',
+      'host-secret-4471']) {
       assert.ok(!all.includes(secret), `${secret} in the logs`);
     }
     assert.ok(lines.some((l) => /status=ok .*page_errors=1 /.test(l)), lines.join('\n'));

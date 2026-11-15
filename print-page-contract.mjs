@@ -16,8 +16,9 @@
 // 5. Print: the page lays itself out for print with CSS (@media print, and @page for the paper size and margins,
 //    Letter with 0.75in margins as the web export has). The renderer prints with the page's @page size, print
 //    backgrounds on, and Letter when the page sets no size.
-// 6. The page never navigates away, opens a window or a dialog, or asks for anything. Page text, console output
-//    and errors never reach the renderer's logs, only counts.
+// 6. The page never navigates away, opens a window or a dialog, or asks for anything. Its frames load only from a
+//    listed origin: the renderer aborts any other navigation request, and one in the main frame ends the render.
+//    Page text, console output and errors never reach the renderer's logs, only counts.
 
 export const CONTRACT_VERSION = 1;
 export const PRINT_GLOBAL = '__youlearnPrint';

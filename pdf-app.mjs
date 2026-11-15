@@ -21,6 +21,19 @@ export const PDF_BODY_LIMIT = '16mb';
 // response does not apply (docs.cloud.google.com/run/quotas).
 const PART_BYTES = 1024 * 1024;
 
+// Resolves when `res` can take more, or has closed.
+function drained(res) {
+  return new Promise((resolve) => {
+    const done = () => {
+      res.off('drain', done);
+      res.off('close', done);
+      resolve();
+    };
+    res.on('drain', done);
+    res.on('close', done);
+  });
+}
+
 /**
  * @param {{ renderPdf: Function, key?: string, log?: Console }} options
  */
@@ -66,8 +79,12 @@ export function createPdfApp({ renderPdf, key = process.env.PDF_API_KEY || '', l
     const { pdf } = result;
     res.status(200);
     res.set({ 'Content-Type': 'application/pdf', 'Cache-Control': 'no-store' });
-    for (let at = 0; at < pdf.length; at += PART_BYTES) res.write(pdf.subarray(at, at + PART_BYTES));
-    return res.end();
+    // Each part waits for the last to drain; a caller that hangs up ends the answer.
+    for (let at = 0; at < pdf.length && !res.destroyed; at += PART_BYTES) {
+      if (!res.write(pdf.subarray(at, at + PART_BYTES))) await drained(res);
+    }
+    if (!res.destroyed) res.end();
+    return undefined;
   });
 
   app.use((_req, res) => {

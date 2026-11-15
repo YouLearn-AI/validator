@@ -7,12 +7,13 @@
 import { GuardedBrowser } from './guarded-browser.mjs';
 import { listenWhenReady } from './check-app.mjs';
 import { createPdfApp } from './pdf-app.mjs';
-import { createPdfRenderer, parseOrigins } from './pdf-renderer.mjs';
+import { createPdfRenderer, parseOrigins, PDF_GUARD } from './pdf-renderer.mjs';
 
 // As in video-server.mjs: a Chromium that never gets ready is ended by exiting the process (Playwright's exit
 // handler kills it), and Cloud Run starts a fresh instance.
 const browser = new GuardedBrowser({
   killable: true,
+  guard: { ...PDF_GUARD },
   onStuckLaunch: () => {
     // eslint-disable-next-line no-console
     console.error('[RENDER_PDF] restarting the instance: Chromium did not start');
@@ -22,7 +23,7 @@ const browser = new GuardedBrowser({
 const origins = parseOrigins(process.env.PDF_PAGE_ORIGINS);
 // eslint-disable-next-line no-console
 if (origins.size === 0) console.error('[RENDER_PDF] PDF_PAGE_ORIGINS lists no origin: every render is refused');
-const app = createPdfApp({ renderPdf: createPdfRenderer(browser, { origins }) });
+const app = createPdfApp({ renderPdf: createPdfRenderer(browser, { origins, checkOptions: PDF_GUARD }) });
 
 // Chromium starts before the port opens (check-app.mjs listenWhenReady says why).
 let closing = false;

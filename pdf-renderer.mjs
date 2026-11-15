@@ -3,9 +3,12 @@
 // The backend sends the print page's URL and the document (a summary's chunks). The URL's origin must be one that
 // PDF_PAGE_ORIGINS lists; the page then opens in the GuardedBrowser (sandbox on, every request through the egress
 // guard), in a fresh context with no cookies, so nobody is signed in inside Chrome. The document goes in with
-// page.evaluate, through the global the page defines (print-page-contract.mjs), never in the URL. The renderer
-// waits for the page's ready or error signal, then returns page.pdf(). Every main-frame navigation must stay on a
-// listed origin, so the document only ever reaches our own page.
+// page.evaluate, through the global the page defines (print-page-contract.mjs), never in the URL, and only after
+// the page checks, in the same call, that it is still on a listed origin. The renderer waits for the page's ready or
+// error signal, then returns page.pdf(). A navigation request (the page, a frame or a popup) to an origin off the
+// list is aborted before it is sent, and one in the main frame ends the render. A server redirect's next hop is not
+// seen before it is sent (Playwright routes only a redirect's first request); it carries no document and no
+// cookies, and a main frame that lands off the list ends the render.
 //
 // One render at a time per instance; a hard deadline ends a render that runs too long. Logs carry codes, counts
 // and times only: the document is a student's summary, and page errors and console output are never logged.
@@ -36,6 +39,10 @@ export const PDF_DEFAULTS = Object.freeze({
 });
 
 const LANGUAGE = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
+
+// The egress guard's settings for this service: a refused host is logged without its name, since a summary's
+// image link can put its text in a hostname (egress-guard.mjs).
+export const PDF_GUARD = Object.freeze({ logHosts: false });
 
 export class PdfBusy extends Error {
   constructor() {
@@ -175,6 +182,7 @@ export function createPdfRenderer(guardedBrowser, { origins, options = {}, log =
     const warm = guardedBrowser.running();
     let stage = 'check';
     let context = null;
+    let opening = null;
     let pageErrors = 0;
     // A main-frame navigation off the listed origins (the page's own script, a redirect) ends the render at once.
     let strayed = false;
@@ -202,11 +210,29 @@ export function createPdfRenderer(guardedBrowser, { origins, options = {}, log =
         await step(guardedBrowser.browser());
         mark('launch_ms');
         stage = 'open';
-        const opening = guardedBrowser.newContext({ viewport: { ...o.viewport }, deviceScaleFactor: 1 });
+        opening = guardedBrowser.newContext({ viewport: { ...o.viewport }, deviceScaleFactor: 1 });
         // A context that opens after the deadline is closed here: the teardown below has run already.
         opening.then((c) => { if (expired) c.close().catch(() => {}); }, () => {});
         context = await step(opening);
         const page = await step(context.newPage());
+        // A navigation off the listed origins is aborted before it is sent: the page's, a frame's or a popup's.
+        // In the main frame it also ends the render.
+        await step(context.route('**/*', (route) => {
+          const request = route.request();
+          // fallback(): any other handler still runs, and with none the request goes on through the egress guard.
+          if (!request.isNavigationRequest() || allowed(request.url(), origins)) return route.fallback().catch(() => {});
+          let main = false;
+          try {
+            main = request.frame() === page.mainFrame();
+          } catch {
+            // A service worker's request has no frame (service workers are blocked).
+          }
+          if (main) {
+            strayed = true;
+            onStray();
+          }
+          return route.abort('blockedbyclient').catch(() => {});
+        }));
         // No second window: a popup is closed as it opens.
         context.on('page', (other) => { if (other !== page) other.close().catch(() => {}); });
         page.on('pageerror', () => { pageErrors += 1; });
@@ -237,10 +263,17 @@ export function createPdfRenderer(guardedBrowser, { origins, options = {}, log =
         stayed();
 
         stage = 'render';
-        // render() is called, not awaited: the page says it is done with its ready signal.
-        await step(page.evaluate(([name, document]) => {
+        // render() is called, not awaited: the page says it is done with its ready signal. The origin is checked in
+        // the same call, so the document reaches only a page on a listed origin.
+        const handed = await step(page.evaluate(([name, document, listed]) => {
+          if (!listed.includes(window.location.origin)) return false;
           window[name].render(document);
-        }, [PRINT_GLOBAL, input]));
+          return true;
+        }, [PRINT_GLOBAL, input, [...origins]]));
+        if (!handed) {
+          strayed = true;
+          throw new PageRefused('navigated');
+        }
 
         stage = 'ready';
         const signal = await step(page.waitForFunction(
@@ -254,7 +287,7 @@ export function createPdfRenderer(guardedBrowser, { origins, options = {}, log =
           [STATE_ATTRIBUTE, ERROR_ATTRIBUTE, READY, ERROR],
           { timeout: 0, polling: o.pollMs },
         ));
-        const { state, code } = await signal.jsonValue();
+        const { state, code } = await step(signal.jsonValue());
         stayed();
         mark('ready_ms');
         if (state === ERROR) throw new PageFailed(PAGE_ERROR_CODE.test(code) ? code : 'unnamed');
@@ -299,13 +332,16 @@ export function createPdfRenderer(guardedBrowser, { origins, options = {}, log =
     } finally {
       clearTimeout(timer);
       // A context that won't close (a page stuck in a loop holds its renderer) ends with Chromium; the next render
-      // launches a new one.
+      // launches a new one. So does a context still opening at the deadline: Chromium may be stuck.
       if (context) {
         const closed = await within(context.close().catch(() => {}), o.teardownMs);
         if (!closed) {
           log.warn('[RENDER_PDF] teardown stalled; resetting the browser');
           await guardedBrowser.reset().catch(() => {});
         }
+      } else if (opening && expired) {
+        log.warn('[RENDER_PDF] context open stalled; resetting the browser');
+        await guardedBrowser.reset().catch(() => {});
       }
       busy = false;
     }
