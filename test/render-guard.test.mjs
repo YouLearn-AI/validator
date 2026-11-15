@@ -196,9 +196,12 @@ describe('/render-screenshot', { timeout: 120_000 }, () => {
 
   async function startApp({ key = KEY, required = false } = {}) {
     const { log } = collectingLog();
+    // Both checks get the test's key: the default validateAuth reads RENDER_API_KEY from the shell, which
+    // with-keys sets to the Render.com vendor key (ops I-1343).
     const app = createApp({
       renderScreenshot: createScreenshotRenderer(browser, { checkOptions: { lookup, log: guardLog.log } }),
       auth: renderAuth({ key, required, log }),
+      validateAuth: renderAuth({ key, required, log }),
     });
     const server = http.createServer(app);
     const port = await listen(server);

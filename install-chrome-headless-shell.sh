@@ -3,7 +3,8 @@
 # It is the browser Playwright itself downloads for headless Chromium, at Chrome's current Stable build instead
 # of the one Playwright bundles (ops I-1114): Playwright 1.64.1's own, 156.0.8078.4, lacks the fixes Chrome
 # 156.0.8078.73 shipped for four Critical CVEs, one of them a sandbox escape. Chrome 157.0.8103.38 adds 213
-# security fixes, 7 of them Critical (ops I-1343). The Dockerfiles point guarded-browser.mjs at it
+# security fixes, 7 of them Critical, and 157.0.8103.50 fixes CVE-2026-125350, a use after free in XML that
+# Google says is exploited in the wild (ops I-1343). The Dockerfiles point guarded-browser.mjs at it
 # (CHROMIUM_EXECUTABLE_PATH).
 #
 # To update: take the Stable channel's version from
@@ -12,11 +13,11 @@
 # first (`curl -I` gives x-goog-hash md5=...). When that Stable is a newer major than the Chromium this Playwright
 # bundles (node_modules/playwright-core/browsers.json), run the test suite against the same version first, with
 # CHROMIUM_EXECUTABLE_PATH set to Chrome for Testing's headless shell for your platform (ops I-1343: Playwright
-# 1.64.1 bundles 156 and passes on 157.0.8103.38).
+# 1.64.1 bundles 156 and passes on 157.0.8103.38 and 157.0.8103.50).
 set -eu
 
-VERSION=157.0.8103.38
-SHA256=deafffa74660b34853a4119c361fd427ac8c9fcb62db51ddb8a797cd83a4ba2d
+VERSION=157.0.8103.50
+SHA256=7bf0d41e424efd1d6281c4162993ab9dc5de92fac213c211614905a71c057d0f
 
 zip=/tmp/chrome-headless-shell-linux64.zip
 apt-get update
