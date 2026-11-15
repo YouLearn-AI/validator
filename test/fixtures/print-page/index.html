@@ -9,7 +9,8 @@
   contract asks with a tiny Markdown subset: headings, paragraphs and pipe tables. Consecutive text and citation
   chunks are merged into one run first, as the web's groupMessages does, so text after a citation prints.
   ?mode= picks a misbehaviour for the tests: error, never, nocontract, navigate, throw, popup, slowcontract,
-  hostleak (an image whose hostname carries text, which the egress guard refuses).
+  hostleak (an image whose hostname carries text, which the egress guard refuses), oddcode (an error code that is
+  not in the contract's list).
 -->
 <style>
   @page { size: Letter; margin: 0.75in; }
@@ -83,6 +84,10 @@
     }
     if (mode === 'error') {
       signal('error', 'render_failed');
+      return;
+    }
+    if (mode === 'oddcode') {
+      signal('error', 'private_summary_text_6614');
       return;
     }
     if (mode === 'navigate') {

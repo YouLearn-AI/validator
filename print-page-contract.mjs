@@ -11,7 +11,8 @@
 // 3. Ready: once every chunk is drawn, fonts are loaded (document.fonts.ready), images have loaded or failed, and
 //    each diagram is drawn or has fallen back, the page sets <html data-print-state="ready">.
 // 4. Error: when it cannot draw the document, the page sets <html data-print-state="error" data-print-error="code">,
-//    the code matching PAGE_ERROR_CODE (such as "bad_input" or "render_failed"). One failed diagram is not an
+//    the code one of PAGE_ERROR_CODES (any other is reported as "unnamed": the renderer logs and answers only
+//    codes from this list, never text the page chose). One failed diagram is not an
 //    error: it prints as drawn (ops I-1175).
 // 5. Print: the page lays itself out for print with CSS (@media print, and @page for the paper size and margins,
 //    Letter with 0.75in margins as the web export has). The renderer prints with the page's @page size, print
@@ -27,4 +28,6 @@ export const STATE_ATTRIBUTE = 'printState';
 export const ERROR_ATTRIBUTE = 'printError';
 export const READY = 'ready';
 export const ERROR = 'error';
-export const PAGE_ERROR_CODE = /^[a-z][a-z0-9_]{0,31}$/;
+// bad_input: the input is not one this page reads (its version, or no chunks); render_failed: drawing failed.
+export const PAGE_ERROR_CODES = Object.freeze(['bad_input', 'render_failed']);
+export const UNNAMED_PAGE_ERROR = 'unnamed';

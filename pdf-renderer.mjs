@@ -15,7 +15,8 @@
 
 import { checkUrl, UrlRefused } from './egress-guard.mjs';
 import {
-  CONTRACT_VERSION, ERROR, ERROR_ATTRIBUTE, PAGE_ERROR_CODE, PRINT_GLOBAL, READY, STATE_ATTRIBUTE,
+  CONTRACT_VERSION, ERROR, ERROR_ATTRIBUTE, PAGE_ERROR_CODES, PRINT_GLOBAL, READY, STATE_ATTRIBUTE,
+  UNNAMED_PAGE_ERROR,
 } from './print-page-contract.mjs';
 import { errorCode } from './request-errors.mjs';
 
@@ -60,7 +61,7 @@ export class PageRefused extends Error {
   }
 }
 
-/** The page set its error signal; `code` is checked against PAGE_ERROR_CODE. */
+/** The page set its error signal; `code` is one of PAGE_ERROR_CODES, or UNNAMED_PAGE_ERROR. */
 export class PageFailed extends Error {
   constructor(code) {
     super(`The print page reported an error (${code})`);
@@ -290,7 +291,7 @@ export function createPdfRenderer(guardedBrowser, { origins, options = {}, log =
         const { state, code } = await step(signal.jsonValue());
         stayed();
         mark('ready_ms');
-        if (state === ERROR) throw new PageFailed(PAGE_ERROR_CODE.test(code) ? code : 'unnamed');
+        if (state === ERROR) throw new PageFailed(PAGE_ERROR_CODES.includes(code) ? code : UNNAMED_PAGE_ERROR);
 
         stage = 'pdf';
         const pdf = await step(page.pdf({ format: 'Letter', preferCSSPageSize: true, printBackground: true }));

@@ -248,6 +248,16 @@ describe('/render-pdf', { timeout: 180_000 }, () => {
     assert.deepEqual([r.json.code, r.json.page_code], ['page_error', 'render_failed']);
   });
 
+  test('an error code the contract does not list is reported as unnamed, never as the page wrote it', async () => {
+    const { base, lines } = await startApp();
+    const r = await post(base, { url: page('oddcode'), document: summary });
+    assert.equal(r.status, 502);
+    assert.deepEqual([r.json.code, r.json.page_code], ['page_error', 'unnamed']);
+    assert.ok(!JSON.stringify(r.json).includes('private_summary'));
+    assert.ok(lines.some((l) => l.startsWith('[RENDER_PDF] status=page_error code=unnamed')), lines.join('\n'));
+    assert.ok(!lines.join('\n').includes('private_summary'));
+  });
+
   test('a page that never says ready is a 504 at its deadline', async () => {
     const { base, lines } = await startApp({ options: { deadlineMs: 3000 } });
     const t0 = Date.now();
