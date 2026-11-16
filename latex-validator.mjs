@@ -1,8 +1,11 @@
 import katex from "katex";
+import { appMathScan, BLANK_LINE, BLOCK_ENVIRONMENTS, INLINE_ENVIRONMENTS, UNCLOSED } from "./app-math.mjs";
 
-// What the scan looks for when a caller sends no delimiters (the backend sends none). The math environments,
-// equation to array, are checked whole and in display mode, as the web app's first list had them (frontend
-// d68a9e104a): KaTeX draws equation and align only in display mode.
+// The scan's list before it read text as the apps draw it (ops I-1237). A caller may still send it, or any list, as
+// custom delimiters. With none (the backend sends none), validateLatex finds math as the web and mobile apps do
+// (app-math.mjs), and checks this list's other entries (PROSE_DELIMITERS) in the text outside math and code. The
+// math environments, equation to array, are checked whole and in display mode when sent as custom delimiters, as
+// the web app's first list had them (frontend d68a9e104a): KaTeX draws equation and align only in display mode.
 export const defaultDelimiters = [
   { left: "\\(", right: "\\)", display: false },
   { left: "\\[", right: "\\]", display: true },
@@ -55,6 +58,24 @@ export const KATEX_ENVIRONMENTS = new Set([
 ]);
 
 const ENVIRONMENT_OPENER = /^\\begin\{([^{}]+)\}$/;
+
+// The KaTeX environments the apps draw only inside other math: a bare one (cases, the matrices, array, ...) is left
+// as text, \begin and all, since their scan opens math at it only for BLOCK_ENVIRONMENTS and INLINE_ENVIRONMENTS.
+const APPS_DRAWN_BARE = new Set([...BLOCK_ENVIRONMENTS, ...INLINE_ENVIRONMENTS]);
+const TEXT_ONLY_ENVIRONMENTS = new Set([...KATEX_ENVIRONMENTS].filter((name) => !APPS_DRAWN_BARE.has(name)));
+// A \begin{name} in text outside math and code; KaTeX's longest environment name, smallmatrix, has 11 letters.
+const BEGIN_IN_TEXT = /\\begin\{([A-Za-z]{1,16}\*?)\}/g;
+
+// Math between single dollars, on one line, as Pandoc's tex_math_dollars reads it: the opening $ has a non-space
+// after it, the closing $ a non-space before it and no digit after it, so "$5 and $10" is not math. The apps draw
+// only $$ ... $$, so such math shows as text; it counts as math only when it holds a command, ^ or _ (MATH_SIGN).
+const SINGLE_DOLLAR_MATH = /(?<![\\$])\$(?![\s$])([^$\n]*?)(?<![\s\\])\$(?![\d$])/g;
+const MATH_SIGN = /\\[A-Za-z]|[\^_]/;
+
+// Error types beside "unclosed" and "katex_error": LaTeX the student sees as text because the apps don't draw it.
+const SHOWN_AS_TEXT = "shown_as_text";
+// How much of the text an error quotes after an opener that has no end.
+const QUOTE_LENGTH = 50;
 
 /**
  * Whether a delimiter pair is one KaTeX environment's \begin and \end, which is checked whole.
@@ -237,19 +258,11 @@ function findDelimiterAtPosition(
 }
 
 /**
- * Validates LaTeX formatting in a string based on supported delimiters
- * @param text The text to validate
- * @param delimiters Optional custom delimiters (defaults to the ones from markdown.tsx)
- * @param macros Optional KaTeX macros
- * @returns Validation result with any errors found; `truncated` when the scan stopped at MAX_ERRORS before the
- *   end of the text, so the text may hold more
+ * The delimiters' math in `text`, checked from `start` until `errors` holds `maxErrors`; returns where the scan
+ * stopped. A delimiter's math is checked with KaTeX, a KaTeX environment whole. Quotes in the errors come from
+ * `quoted`, a text of the same length (the original, when `text` blanks some of it out).
  */
-export function validateLatex(
-  text,
-  delimiters = defaultDelimiters,
-  macros
-) {
-  const errors = [];
+function scanDelimiters(text, delimiters, macros, errors, maxErrors, quoted = text) {
   let position = 0;
 
   // Create regex for finding opening delimiters
@@ -260,7 +273,7 @@ export function validateLatex(
   // Each pass must start past the previous one; an empty delimiter would start every pass at the same place.
   // The closing scan (findClose) always moves forward.
   let previousStart = -1;
-  while (position < text.length && errors.length < MAX_ERRORS) {
+  while (position < text.length && errors.length < maxErrors) {
     if (position <= previousStart) {
       throw new LatexScanStalled(position);
     }
@@ -293,14 +306,7 @@ export function validateLatex(
 
     const endPos = findClose(text, position + leftDelimLength, delimiter);
     if (endPos === -1) {
-      // Unclosed delimiter
-      errors.push({
-        message: `Unclosed LaTeX delimiter: "${delimiter.left}" at position ${startPos}`,
-        position: startPos,
-        length: delimiter.left.length,
-        latex: text.slice(startPos, Math.min(startPos + 50, text.length)) + "...",
-        type: "unclosed",
-      });
+      errors.push(unclosedError(quoted, startPos, delimiter.left));
       position += leftDelimLength;
       continue;
     }
@@ -310,27 +316,182 @@ export function validateLatex(
       ? text.slice(startPos, end)
       : text.slice(startPos + leftDelimLength, endPos);
 
-    // Validate the LaTeX syntax with KaTeX
-    try {
-      katex.renderToString(latexContent, {
-        displayMode: delimiter.display,
-        macros,
-        throwOnError: true,
-      });
-    } catch (katexError) {
-      errors.push({
-        message: `Invalid LaTeX syntax: ${katexError.message}`,
-        position: startPos,
-        length: end - startPos,
-        latex: text.slice(startPos, end),
-        type: "katex_error",
-      });
-    }
+    const problem = katexProblem(latexContent, delimiter.display, macros);
+    if (problem) errors.push(katexError(quoted, startPos, end, problem));
 
     // Move position past the closing delimiter
     position = end;
   }
 
+  return position;
+}
+
+/** KaTeX's error message for this math, or null when KaTeX draws it. */
+function katexProblem(math, displayMode, macros) {
+  try {
+    katex.renderToString(math, { displayMode, macros, throwOnError: true });
+    return null;
+  } catch (error) {
+    return error.message;
+  }
+}
+
+function unclosedError(text, position, opener, why = "") {
+  return {
+    message: `Unclosed LaTeX delimiter: "${opener}" at position ${position}${why}`,
+    position,
+    length: opener.length,
+    latex: text.slice(position, Math.min(position + QUOTE_LENGTH, text.length)) + "...",
+    type: "unclosed",
+  };
+}
+
+function katexError(text, start, end, message, hint = "") {
+  return {
+    message: `Invalid LaTeX syntax: ${message}${hint}`,
+    position: start,
+    length: end - start,
+    latex: text.slice(start, end),
+    type: "katex_error",
+  };
+}
+
+function shownAsTextError(text, start, end, message) {
+  return { message, position: start, length: end - start, latex: text.slice(start, end), type: SHOWN_AS_TEXT };
+}
+
+/** The error for an opener the apps leave as text (appMathScan's "refused"). */
+function refusedError(text, { start, delimiter, reason, end }) {
+  if (reason === UNCLOSED) return unclosedError(text, start, delimiter.open);
+  if (reason === BLANK_LINE) {
+    return unclosedError(text, start, delimiter.open, `: the apps never close ${delimiter.open} across a blank line`);
+  }
+  return shownAsTextError(
+    text,
+    start,
+    end,
+    `LaTeX shown as text: the apps don't draw the math "${delimiter.open}" opens at position ${start}, because ` +
+      `${reason}. Write a lone bracket as \\lbrack or \\rbrack.`,
+  );
+}
+
+/** Errors for the text between math and code, from `start` to `end`: bare environments and single-dollar math. */
+function proseErrors(text, start, end) {
+  const prose = text.slice(start, end);
+  const found = [];
+  for (const match of prose.matchAll(BEGIN_IN_TEXT)) {
+    const name = match[1];
+    if (!TEXT_ONLY_ENVIRONMENTS.has(name)) continue;
+    const at = start + match.index;
+    found.push(shownAsTextError(
+      text,
+      at,
+      at + match[0].length,
+      `LaTeX shown as text: \\begin{${name}} at position ${at} is outside math, and the apps draw it only inside ` +
+        `$$ ... $$. Put the whole \\begin{${name}} ... \\end{${name}} inside $$ ... $$.`,
+    ));
+  }
+  for (const match of prose.matchAll(SINGLE_DOLLAR_MATH)) {
+    if (!MATH_SIGN.test(match[1])) continue;
+    const at = start + match.index;
+    found.push(shownAsTextError(
+      text,
+      at,
+      at + match[0].length,
+      `LaTeX shown as text: math between single $ at position ${at}; the apps draw only $$ ... $$ as math.`,
+    ));
+  }
+  return found.sort((a, b) => a.position - b.position);
+}
+
+// The default list's entries the apps' scan does not cover: checked in the text outside math and code, as before.
+const PROSE_DELIMITERS = defaultDelimiters.filter(({ left }) => {
+  const name = ENVIRONMENT_OPENER.exec(left)?.[1];
+  return left !== "\\(" && left !== "\\[" && !(name && (KATEX_ENVIRONMENTS.has(name) || APPS_DRAWN_BARE.has(name)));
+});
+
+/**
+ * The text checked as the web and mobile apps draw it (ops I-1237). Math they draw is checked with KaTeX as they
+ * pass it: a $$ pair whole, inline unless it stands on its own lines; \[ \] and \( \) by their content; a bare
+ * equation or align-family environment by its body alone. LaTeX they leave as text is an error: an opener they
+ * can't close, math whose structure they reject, a bare cases, matrix or other environment they draw only inside
+ * math, and math between single dollars. The text outside math and code is then checked against PROSE_DELIMITERS.
+ * Stops after MAX_ERRORS; `truncated` says the text holds more.
+ */
+function validateAsAppsDraw(text, macros) {
+  const limit = MAX_ERRORS + 1;
+  const errors = [];
+  const blanked = [];
+  let proseStart = 0;
+
+  const addProse = (end) => {
+    for (const error of proseErrors(text, proseStart, end)) {
+      if (errors.length >= limit) return;
+      errors.push(error);
+      if (error.type === SHOWN_AS_TEXT) blanked.push([error.position, error.position + error.length]);
+    }
+  };
+
+  for (const part of appMathScan(text)) {
+    if (errors.length >= limit) break;
+    if (part.kind === "refused") {
+      errors.push(refusedError(text, part));
+      continue;
+    }
+    addProse(part.start);
+    if (errors.length >= limit) break;
+    if (part.kind === "math") {
+      const problem = katexProblem(part.content, part.display, macros);
+      if (problem) {
+        const bare = part.delimiter.open.startsWith("\\begin{")
+          ? `. The apps draw a bare ${part.delimiter.open} by its body alone: put it inside $$ ... $$.`
+          : "";
+        errors.push(katexError(text, part.start, part.end, problem, bare));
+      }
+    }
+    blanked.push([part.start, part.end]);
+    proseStart = part.end;
+  }
+  if (errors.length < limit) addProse(text.length);
+
+  if (errors.length < limit) {
+    const outside = blankOut(text, blanked);
+    scanDelimiters(outside, PROSE_DELIMITERS, macros, errors, limit, text);
+  }
+
+  errors.sort((a, b) => a.position - b.position);
+  return {
+    isValid: errors.length === 0,
+    errors: errors.slice(0, MAX_ERRORS),
+    truncated: errors.length > MAX_ERRORS,
+  };
+}
+
+/** The text with each [start, end) span turned to spaces, so positions stay where they were. */
+function blankOut(text, spans) {
+  let blanked = "";
+  let last = 0;
+  for (const [start, end] of spans.sort((a, b) => a[0] - b[0])) {
+    if (end <= last) continue;
+    const from = Math.max(start, last);
+    blanked += text.slice(last, from) + " ".repeat(end - from);
+    last = end;
+  }
+  return blanked + text.slice(last);
+}
+
+/**
+ * Validates LaTeX formatting in a string
+ * @param text The text to validate
+ * @param delimiters Optional custom delimiters; without them, the text is checked as the apps draw it
+ * @param macros Optional KaTeX macros
+ * @returns Validation result with any errors found, at most MAX_ERRORS; `truncated` when the scan stopped there
+ *   with text left, so the text may hold more
+ */
+export function validateLatex(text, delimiters, macros) {
+  if (delimiters === undefined) return validateAsAppsDraw(text, macros);
+  const errors = [];
+  const position = scanDelimiters(text, delimiters, macros, errors, MAX_ERRORS);
   return {
     isValid: errors.length === 0,
     errors,

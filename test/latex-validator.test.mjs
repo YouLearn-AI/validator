@@ -191,19 +191,27 @@ describe('the scan never repeats a pass in place', () => {
 describe('the scan stops at 50 errors (I-1238)', () => {
   const KB = 1024;
   const CAP = 50;
+  // Each with the error type the apps' reading gives it (I-1237): a bare cases is text, and an opener whose \\)
+  // sits inside braces closes there in the apps, around math whose braces don't pair.
   const unclosed = [
-    ['unclosed \\(', '\\('.repeat(128 * KB)],
-    ['unclosed \\begin{cases}', '\\begin{cases}'.repeat(20 * KB)],
-    ['openers whose \\) sits inside braces', `${'\\( '.repeat(80 * KB)}{\\)}`],
-    ['prose with a stray \\( in each sentence', 'A sentence of prose with a stray \\( in it. '.repeat(6 * KB)],
+    ['unclosed \\(', '\\('.repeat(128 * KB), 'unclosed'],
+    ['unclosed \\begin{cases}', '\\begin{cases}'.repeat(20 * KB), 'shown_as_text'],
+    ['openers whose \\) sits inside braces', `${'\\( '.repeat(80 * KB)}{\\)}`, 'shown_as_text'],
+    ['prose with a stray \\( in each sentence', 'A sentence of prose with a stray \\( in it. '.repeat(6 * KB), 'unclosed'],
+    // The apps' reading (I-1237): bare openers they would draw, $$ they never close across a blank line, math
+    // between single dollars, and openers between code spans.
+    ['unclosed bare \\begin{equation}', '\\begin{equation}'.repeat(16 * KB), 'unclosed'],
+    ['$$ before blank lines', '$$\n\n'.repeat(64 * KB), 'unclosed'],
+    ['math between single dollars', '$x^2$ '.repeat(42 * KB), 'shown_as_text'],
+    ['an unclosed \\( after each code span', '`a` \\( '.repeat(36 * KB), 'unclosed'],
   ];
-  for (const [name, text] of unclosed) {
+  for (const [name, text, type] of unclosed) {
     test(`${name}, about 256 KB, answers at once with the first 50 errors`, async () => {
       const answer = await callInWorker('validateLatex', text);
       assert.notEqual(answer, TIMED_OUT, 'the scan stalled');
       assert.equal(answer.result.errors.length, CAP);
       assert.equal(answer.result.truncated, true);
-      assert.ok(answer.result.errors.every((error) => error.type === 'unclosed'));
+      assert.ok(answer.result.errors.every((error) => error.type === type));
     });
   }
 

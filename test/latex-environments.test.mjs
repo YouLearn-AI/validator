@@ -1,7 +1,8 @@
-// A math environment KaTeX supports (cases, the matrices, array, align, equation) is checked whole, its \begin
-// and \end included, in display mode (ops I-1691). The scan used to check only the rows between them, where '&'
-// and '\\' are errors, so valid display math such as a cases function in $$ was flagged, and the backend
-// rewrote the whole summary to "fix" it. Broken math inside an environment must still fail.
+// A math environment KaTeX supports (cases, the matrices, array, align, equation) is checked whole inside math, its
+// \begin and \end included (ops I-1691). The scan used to check only the rows between them, where '&' and '\\' are
+// errors, so valid display math such as a cases function in $$ was flagged, and the backend rewrote the whole
+// summary to "fix" it. Outside math, an environment is checked as the apps draw it (ops I-1237). Broken math inside
+// an environment must still fail.
 
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,57 +22,71 @@ const ENVIRONMENTS = [
   ['equation', '\\begin{equation} E = mc^2 \\end{equation}'],
 ];
 
-// How a summary carries display math: the backend's prompts ask for $$, the frontend also draws \[ \], and the
-// align family stands bare. The scan does not read $$ (I-1237), so an environment inside $$ looks bare to it, and
-// the two must answer alike. The web app itself does not draw a bare cases or matrix, and draws a bare align
-// without its \begin and \end (frontend tokenizer.ts); this test checks KaTeX's verdict, not the web app's.
+// How a summary carries display math: the backend's prompts ask for $$, and the apps also draw \[ \] and a bare
+// equation or align. $$ and \[ \] draw an environment whole.
 const PLACEMENTS = [
   ['inside $$', (math) => `The rule is\n\n$$${math}$$\n\nfor every case.`],
   ['inside \\[ \\]', (math) => `The rule is \\[${math}\\] for every case.`],
   ['bare', (math) => `The rule is\n\n${math}\n\nfor every case.`],
 ];
 
-// I-1237 may add $$ to the defaults; an environment inside it must then be checked as part of its $$, not alone.
+// Bare, the apps (frontend tokenizer.ts:307) draw an equation or align by its body alone, where the rows' '&' fail,
+// and show a cases, matrix or array as text. The first error each gives bare, or null when the apps draw it.
+const BARE_FIRST_ERROR = {
+  cases: 'shown_as_text',
+  matrix: 'shown_as_text',
+  pmatrix: 'shown_as_text',
+  bmatrix: 'shown_as_text',
+  array: 'shown_as_text',
+  align: 'katex_error',
+  'align*': 'katex_error',
+  equation: null,
+};
+
+// The defaults sent as custom delimiters, with $$ in front: the scan's list before I-1237, plus $$.
 const WITH_DOLLARS = [{ left: '$$', right: '$$', display: true }, ...defaultDelimiters];
 
 describe('KaTeX math environments are checked whole (I-1691)', () => {
   for (const [name, math] of ENVIRONMENTS) {
     for (const [where, place] of PLACEMENTS) {
-      test(`valid ${name} ${where} passes`, () => {
-        assert.deepEqual(validateLatex(place(math)).errors, []);
+      const expected = where === 'bare' ? BARE_FIRST_ERROR[name] : null;
+      test(expected ? `${name} ${where} fails as the apps draw it (${expected})` : `valid ${name} ${where} passes`, () => {
+        const { errors } = validateLatex(place(math));
+        if (expected) assert.equal(errors[0]?.type, expected);
+        else assert.deepEqual(errors, []);
       });
     }
   }
 
   for (const [name, math] of ENVIRONMENTS) {
     const close = `\\end{${name}}`;
+    // In $$ on its own lines, the apps draw the math whole; braces that don't pair keep them from drawing it.
     const broken = [
       ['an unknown command', math.replace(close, `\\notacommand ${close}`), 'katex_error', /Undefined control sequence: \\notacommand/],
-      ['an unclosed brace', math.replace(close, `\\frac{1}{2 ${close}`), 'unclosed', /Unclosed LaTeX delimiter/],
-      ['a stray closing brace', math.replace(close, `x} ${close}`), 'katex_error', /Invalid LaTeX syntax/],
+      ['an unclosed brace', math.replace(close, `\\frac{1}{2 ${close}`), 'shown_as_text', /LaTeX shown as text/],
+      ['a stray closing brace', math.replace(close, `x} ${close}`), 'shown_as_text', /LaTeX shown as text/],
     ];
     for (const [fault, text, type, message] of broken) {
       test(`${name} with ${fault} still fails, inside $$ and bare`, () => {
-        for (const placed of [`$$${text}$$`, text]) {
-          const { isValid, errors } = validateLatex(placed);
-          assert.equal(isValid, false, placed);
-          assert.equal(errors[0].type, type, placed);
-          assert.match(errors[0].message, message, placed);
-        }
+        const inDollars = validateLatex(`\n$$${text}$$\n`);
+        assert.equal(inDollars.errors[0].type, type);
+        assert.match(inDollars.errors[0].message, message);
+        assert.equal(validateLatex(text).isValid, false, text);
       });
     }
   }
 
   test('an unclosed environment fails', () => {
     const { errors } = validateLatex('$$\\begin{cases} x & y$$');
-    assert.deepEqual(errors.map((error) => error.message), ['Unclosed LaTeX delimiter: "\\begin{cases}" at position 2']);
+    assert.equal(errors[0].type, 'shown_as_text');
+    assert.match(errors[0].message, /because a \\begin has no \\end/);
   });
 
-  test('the error spans the whole environment', () => {
+  test('the error spans the whole $$ math the environment sits in', () => {
     const text = 'So $$\\begin{pmatrix} 1 & \\oops \\end{pmatrix}$$.';
     const [error] = validateLatex(text).errors;
-    assert.equal(error.position, 5);
-    assert.equal(error.latex, '\\begin{pmatrix} 1 & \\oops \\end{pmatrix}');
+    assert.equal(error.position, 3);
+    assert.equal(error.latex, '$$\\begin{pmatrix} 1 & \\oops \\end{pmatrix}$$');
     assert.equal(error.length, error.latex.length);
   });
 
@@ -95,7 +110,7 @@ describe('KaTeX math environments are checked whole (I-1691)', () => {
     assert.deepEqual(validateLatex(text).errors, []);
   });
 
-  test('with $$ as a delimiter (I-1237), an environment is checked as part of its $$, never alone', () => {
+  test('with $$ as a custom delimiter, an environment is checked as part of its $$, never alone', () => {
     const valid = 'The sign is $$\\operatorname{sgn}(x) = \\begin{cases} 1 & x > 0 \\\\ 0 & x = 0 \\\\ -1 & x < 0 \\end{cases}$$ here.';
     assert.deepEqual(validateLatex(valid, WITH_DOLLARS).errors, []);
     const broken = 'The sign is $$\\operatorname{sgn}(x) = \\begin{cases} \\oops & x > 0 \\end{cases}$$ here.';
@@ -105,9 +120,7 @@ describe('KaTeX math environments are checked whole (I-1691)', () => {
     assert.ok(errors[0].latex.startsWith('$$'), errors[0].latex);
   });
 
-  test('with $$ as a delimiter (I-1237), broken math around an environment in $$ fails too', () => {
-    // Without $$ in the list these pass, as broken math in any $$ does; the old scan flagged them only through
-    // the false alarm on the environment's rows.
+  test('with $$ as a custom delimiter, broken math around an environment in $$ fails too', () => {
     for (const text of ['$$\\oops \\begin{cases} x & y \\end{cases}$$', '$$\\begin{cases} x & y \\end{cases}}$$']) {
       const { errors } = validateLatex(text, WITH_DOLLARS);
       assert.equal(errors.length, 1, text);

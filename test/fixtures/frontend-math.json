@@ -1,0 +1,13 @@
+{
+  "repo": "youlearnai/frontend",
+  "commit": "6637ffad4b77519547ecdb7626fff3d80d5dcc5f",
+  "files": {
+    "packages/libs/utils/src/lib/markdown/patterns.ts": "833463137bba6ed0fbd74fd94eee73f76710f2b4",
+    "packages/libs/utils/src/lib/markdown/tokenizer.ts": "118a67d78ead329c718f9b386aca2c35187b3d31"
+  },
+  "BLOCK_ENVIRONMENTS": [
+    "equation", "equation*", "align", "align*", "gather", "gather*", "multline", "multline*", "displaymath",
+    "eqnarray", "eqnarray*", "split", "aligned", "gathered", "flalign", "flalign*", "alignat", "alignat*"
+  ],
+  "INLINE_ENVIRONMENTS": ["math"]
+}
