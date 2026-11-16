@@ -1,5 +1,5 @@
 import katex from "katex";
-import { appMathScan, BLANK_LINE, BLOCK_ENVIRONMENTS, INLINE_ENVIRONMENTS, UNCLOSED } from "./app-math.mjs";
+import { BLANK_LINE, BLOCK_ENVIRONMENTS, INLINE_ENVIRONMENTS, readAsApps, UNCLOSED } from "./app-math.mjs";
 
 // The scan's list before it read text as the apps draw it (ops I-1237). A caller may still send it, or any list, as
 // custom delimiters. With none (the backend sends none), validateLatex finds math as the web and mobile apps do
@@ -67,10 +67,13 @@ const TEXT_ONLY_ENVIRONMENTS = new Set([...KATEX_ENVIRONMENTS].filter((name) => 
 const BEGIN_IN_TEXT = /\\begin\{([A-Za-z]{1,16}\*?)\}/g;
 
 // Math between single dollars, on one line, as Pandoc's tex_math_dollars reads it: the opening $ has a non-space
-// after it, the closing $ a non-space before it and no digit after it, so "$5 and $10" is not math. The apps draw
-// only $$ ... $$, so such math shows as text; it counts as math only when it holds a command, ^ or _ (MATH_SIGN).
-const SINGLE_DOLLAR_MATH = /(?<![\\$])\$(?![\s$])([^$\n]*?)(?<![\s\\])\$(?![\d$])/g;
-const MATH_SIGN = /\\[A-Za-z]|[\^_]/;
+// after it, the closing $ a non-space before it and no digit after it, so "$5 and $10" is not math, and a backslash
+// escapes the character after it, so "\$" neither opens nor closes it. Stricter than Pandoc, no letter or _ may
+// follow the closing $ either, so shell variables like "$HOME_DIR/$USER" are not math. The apps draw only
+// $$ ... $$, so such math shows as text. It counts only when it holds a command, a ^, or a _ between letters, digits
+// or braces as in a_1 or x_{i} (MATH_SIGN): Markdown's _emphasis_ has a space or punctuation on one side.
+const SINGLE_DOLLAR_MATH = /(?<![\\$])\$(?![\s$])((?:[^$\n\\]|\\[^\n])*?)(?<!\s)\$(?![\w$])/g;
+const MATH_SIGN = /\\[A-Za-z]|\^|[A-Za-z0-9}]_[A-Za-z0-9{\\]/;
 
 // Error types beside "unclosed" and "katex_error": LaTeX the student sees as text because the apps don't draw it.
 const SHOWN_AS_TEXT = "shown_as_text";
@@ -375,9 +378,12 @@ function refusedError(text, { start, delimiter, reason, end }) {
   );
 }
 
-/** Errors for the text between math and code, from `start` to `end`: bare environments and single-dollar math. */
-function proseErrors(text, start, end) {
-  const prose = text.slice(start, end);
+/**
+ * Errors for the text between math and code, from `start` to `end`: bare environments and single-dollar math. The
+ * patterns run on `shown`, the text with its source chips blanked out; the errors quote `text`.
+ */
+function proseErrors(text, shown, start, end) {
+  const prose = shown.slice(start, end);
   const found = [];
   for (const match of prose.matchAll(BEGIN_IN_TEXT)) {
     const name = match[1];
@@ -416,26 +422,43 @@ const PROSE_DELIMITERS = defaultDelimiters.filter(({ left }) => {
  * equation or align-family environment by its body alone. LaTeX they leave as text is an error: an opener they
  * can't close, math whose structure they reject, a bare cases, matrix or other environment they draw only inside
  * math, and math between single dollars. The text outside math and code is then checked against PROSE_DELIMITERS.
- * Stops after MAX_ERRORS; `truncated` says the text holds more.
+ * What a citation the apps draw as a source chip holds is never shown, so it is not checked.
+ * Stops after MAX_ERRORS errors or refused openers (each refused opener may cost a pass over the rest of the text);
+ * `truncated` says the text may hold more, and a text the check did not finish is not valid.
  */
 function validateAsAppsDraw(text, macros) {
   const limit = MAX_ERRORS + 1;
-  const errors = [];
-  const blanked = [];
-  let proseStart = 0;
+  const reading = readAsApps(text);
+  const parts = [];
+  let refused = 0;
+  for (const part of reading.parts) {
+    parts.push(part);
+    if (part.kind === "refused" && ++refused >= limit) break;
+  }
+  const stoppedEarly = refused >= limit;
+  const chips = reading.sourceTokens(parts);
+  const shown = blankOut(text, chips);
+  let chip = 0;
+  const inChip = (position) => {
+    while (chip < chips.length && chips[chip][1] <= position) chip++;
+    return chip < chips.length && chips[chip][0] <= position;
+  };
 
+  const errors = [];
+  const blanked = [...chips];
+  let proseStart = 0;
   const addProse = (end) => {
-    for (const error of proseErrors(text, proseStart, end)) {
+    for (const error of proseErrors(text, shown, proseStart, end)) {
       if (errors.length >= limit) return;
       errors.push(error);
       if (error.type === SHOWN_AS_TEXT) blanked.push([error.position, error.position + error.length]);
     }
   };
 
-  for (const part of appMathScan(text)) {
+  for (const part of parts) {
     if (errors.length >= limit) break;
     if (part.kind === "refused") {
-      errors.push(refusedError(text, part));
+      if (!inChip(part.start)) errors.push(refusedError(text, part));
       continue;
     }
     addProse(part.start);
@@ -452,18 +475,20 @@ function validateAsAppsDraw(text, macros) {
     blanked.push([part.start, part.end]);
     proseStart = part.end;
   }
-  if (errors.length < limit) addProse(text.length);
+  if (errors.length < limit && !stoppedEarly) addProse(text.length);
 
   if (errors.length < limit) {
     const outside = blankOut(text, blanked);
-    scanDelimiters(outside, PROSE_DELIMITERS, macros, errors, limit, text);
+    const end = stoppedEarly ? proseStart : text.length;
+    scanDelimiters(outside.slice(0, end), PROSE_DELIMITERS, macros, errors, limit, text);
   }
 
   errors.sort((a, b) => a.position - b.position);
+  const truncated = errors.length > MAX_ERRORS || stoppedEarly;
   return {
-    isValid: errors.length === 0,
+    isValid: errors.length === 0 && !truncated,
     errors: errors.slice(0, MAX_ERRORS),
-    truncated: errors.length > MAX_ERRORS,
+    truncated,
   };
 }
 

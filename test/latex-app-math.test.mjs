@@ -1,14 +1,17 @@
 // Without custom delimiters, POST /validate/latex reads a text as the web and mobile apps draw it (ops I-1237):
 // app-math.mjs ports their shared math scan. The backend asks summaries for $$ math only, and the scan before this
-// had no $$ delimiter, so broken $$ math passed and students saw it raw. Each rule below passed on the scan before
-// I-1237 where this one fails, or (code, currency) failed where this one passes; the inputs are synthetic.
+// had no $$ delimiter, so broken $$ math passed and students saw it raw. Most tests below give a verdict the scan
+// before I-1237 (validator 1b2c5e8) gets wrong; the passing controls (currency, shell variables, Markdown emphasis)
+// pass on both and guard against false alarms. The inputs are synthetic.
 
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createApp } from '../app.mjs';
 import { validateLatex } from '../latex-validator.mjs';
-import { appMathScan, BLOCK_ENVIRONMENTS, INLINE_ENVIRONMENTS, MATH_DELIMITERS } from '../app-math.mjs';
+import {
+  appMathScan, BLOCK_ENVIRONMENTS, findCitations, INLINE_ENVIRONMENTS, isSpace, MATH_DELIMITERS, SOURCE_PATTERN,
+} from '../app-math.mjs';
 
 const types = (text) => validateLatex(text).errors.map((error) => error.type);
 
@@ -93,7 +96,15 @@ describe('math between single dollars is shown as text (I-1237)', () => {
     });
   }
 
-  for (const text of ['Costs $5 and $10.', 'From $5-$10 a day.', 'It is \\$5 or \\$x^2\\$.', 'A $ sign and a ^ caret.', 'Pay $3, get $x', '$$x$$']) {
+  test('an escaped dollar inside the math does not end it', () => {
+    const { errors } = validateLatex('$x^2+\\$5$');
+    assert.deepEqual(errors.map(({ type, latex }) => [type, latex]), [['shown_as_text', '$x^2+\\$5$']]);
+  });
+
+  for (const text of [
+    'Costs $5 and $10.', 'From $5-$10 a day.', 'It is \\$5 or \\$x^2\\$.', 'A $ sign and a ^ caret.', 'Pay $3, get $x',
+    'Set $HOME_DIR/$USER_NAME first.', 'Use $HOME_DIR/$USER for the path.', 'Price: $5 _each_ (US$).', '$$x$$',
+  ]) {
     test(`${JSON.stringify(text)} passes`, () => {
       assert.deepEqual(validateLatex(text).errors, []);
     });
@@ -105,6 +116,73 @@ describe('code is code (I-1237)', () => {
     assert.deepEqual(validateLatex('Type `\\(` to open math.').errors, []);
     assert.deepEqual(validateLatex('```\n\\begin{cases} x\n$$x^{$$\n```\nDone.').errors, []);
     assert.deepEqual(types('Type `\\(` then \\( alone.'), ['unclosed']);
+  });
+
+  test('a citation inside code is removed before code is found, as the apps do, which can end a code span', () => {
+    // Without the citation, "``" opens a span that " `" closes, and the $$ after it is math.
+    const { errors } = validateLatex('`【3】` `$$\\oops$$`');
+    assert.deepEqual(errors.map(({ type, position, latex }) => [type, position, latex]), [['katex_error', 7, '$$\\oops$$']]);
+  });
+});
+
+describe('citations, as the apps read them (I-1237)', () => {
+  test('findCitations finds what the apps\' pattern finds, in whole texts and slices', () => {
+    // Random near-citations: each field present or not, quoted or not, values that hold the characters the
+    // pattern stops at, and closings that are missing or doubled. 600,000 such texts agreed when this was written.
+    let seed = 1237;
+    const random = (n) => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return Math.floor((seed / 0x80000000) * n);
+    };
+    const pick = (list) => list[random(list.length)];
+    const noise = ['', ' ', '\n', '】', ',', '"', '【', 'a', '1', '-', '.', ':', '　'];
+    const values = ['', ' ', '  ', '1', '1, 2', '1.5,-2 ', ' , ', '"a"', '"a】b"', '"', '""', 'a】', 'x,y', ' \n', ', source: s'];
+    const citation = () => {
+      let text = `【${pick(['1', 'a b', ' ', '', 'x【', '"', '1 '])}`;
+      for (let i = random(4); i > 0; i--) {
+        text += pick([', type:', ', bbox:', ', source:', ',type:', ', bbox :', ',']) + pick(values);
+      }
+      return text + pick(['', ' ', '  ']) + pick(['】', '】', '', ',', '"】', '】】']);
+    };
+    const byPattern = (text) => [...text.matchAll(SOURCE_PATTERN)].map((m) => [m.index, m.index + m[0].length]);
+    let found = 0;
+    for (let n = 0; n < 20_000; n++) {
+      let text = '';
+      for (let i = 1 + random(3); i > 0; i--) text += pick(noise) + citation() + pick(noise);
+      const from = random(3) === 0 ? random(text.length + 1) : 0;
+      const limit = random(3) === 0 ? from + random(text.length - from + 1) : text.length;
+      const want = byPattern(text.slice(from, limit)).map(([start, end]) => [start + from, end + from]);
+      assert.deepEqual(findCitations(text, from, limit), want, JSON.stringify([text, from, limit]));
+      found += want.length;
+    }
+    assert.ok(found > 5_000, `only ${found} citations in the sample`);
+  });
+
+  test('isSpace is the patterns\' \\s for every UTF-16 code unit', () => {
+    for (let code = 0; code <= 0xffff; code++) {
+      assert.equal(isSpace(code), /\s/.test(String.fromCharCode(code)), `U+${code.toString(16)}`);
+    }
+  });
+
+  test('what a citation outside math holds is drawn as a source chip, not checked as LaTeX', () => {
+    assert.deepEqual(validateLatex('As 【3, source: "Use $$ for math"】 says.').errors, []);
+    assert.deepEqual(validateLatex('【3, source: "$x^2$ and \\begin{cases}"】').errors, []);
+    assert.deepEqual(types('Use $$ here 【3, source: "x"】.'), ['unclosed']);
+  });
+
+  test('math the scan finds inside a citation is drawn, since the apps find math before citations', () => {
+    assert.deepEqual(types('【3, source: "$$\\oops$$"】'), ['katex_error']);
+  });
+
+  test('a citation of any length is removed from math', () => {
+    for (const length of [510, 5_000]) {
+      assert.deepEqual(validateLatex(`$$x 【3, source: "${'a'.repeat(length)}}"】$$`).errors, [], String(length));
+    }
+  });
+
+  test('openers inside source chips count toward the stop at 50, and a text the check did not finish is not valid', () => {
+    const result = validateLatex(`【1, source: "${'\\( '.repeat(60)}"】 and $$\\oops$$`);
+    assert.deepEqual(result, { isValid: false, errors: [], truncated: true });
   });
 });
 
@@ -142,8 +220,8 @@ describe('environments the apps place differently from plain $$ pairing (I-1237,
   });
 });
 
-// The pin: the frontend files the port follows (their blob ids) and the lists they hold. The hub monitor's sweep
-// compares the pin and these lists with the frontend's main; this test keeps the port and the pin together.
+// The pin: the frontend commit and files the port follows, and the lists they hold. The hub monitor's sweep compares
+// the pin and these lists with the frontend's main; this test keeps the port and the pin together.
 const PIN = JSON.parse(readFileSync(new URL('./fixtures/frontend-math.json', import.meta.url), 'utf8'));
 
 describe('the port keeps the apps\' lists and order', () => {

@@ -215,6 +215,22 @@ describe('the scan stops at 50 errors (I-1238)', () => {
     });
   }
 
+  // The apps' citation pattern backtracks on long whitespace runs: Codex's first review of I-1237 found the first
+  // shape took 8.67 s when the port ran it, even on at most 512 characters from each 【.
+  const citations = [
+    ['citations whose bbox runs on in spaces', `$$${'【1, bbox: '.concat(' '.repeat(400)).repeat(600)}{$$`, 2],
+    ['citations whose source runs on unclosed', `$$${'【1, source: '.concat('a'.repeat(400)).repeat(600)}{$$`, 2],
+    ['citations inside code spans', '`【1, bbox: '.concat(' '.repeat(300), '` ').repeat(700), 0],
+    ['openers of citations that never close', '【'.repeat(128 * KB), 0],
+  ];
+  for (const [name, text, count] of citations) {
+    test(`${name}, about 256 KB, answers at once`, async () => {
+      const answer = await callInWorker('validateLatex', text);
+      assert.notEqual(answer, TIMED_OUT, 'the scan stalled');
+      assert.equal(answer.result.errors.length, count);
+    });
+  }
+
   test('fewer errors than the cap are all listed', async () => {
     const answer = await callInWorker('validateLatex', 'a \\( b \\( c \\( d');
     assert.equal(answer.result.errors.length, 3);
