@@ -22,7 +22,9 @@ const ENVIRONMENTS = [
 ];
 
 // How a summary carries display math: the backend's prompts ask for $$, the frontend also draws \[ \], and the
-// align family stands bare.
+// align family stands bare. The scan does not read $$ (I-1237), so an environment inside $$ looks bare to it, and
+// the two must answer alike. The web app itself does not draw a bare cases or matrix, and draws a bare align
+// without its \begin and \end (frontend tokenizer.ts); this test checks KaTeX's verdict, not the web app's.
 const PLACEMENTS = [
   ['inside $$', (math) => `The rule is\n\n$$${math}$$\n\nfor every case.`],
   ['inside \\[ \\]', (math) => `The rule is \\[${math}\\] for every case.`],
@@ -101,6 +103,16 @@ describe('KaTeX math environments are checked whole (I-1691)', () => {
     assert.equal(errors.length, 1);
     assert.equal(errors[0].position, broken.indexOf('$$'));
     assert.ok(errors[0].latex.startsWith('$$'), errors[0].latex);
+  });
+
+  test('with $$ as a delimiter (I-1237), broken math around an environment in $$ fails too', () => {
+    // Without $$ in the list these pass, as broken math in any $$ does; the old scan flagged them only through
+    // the false alarm on the environment's rows.
+    for (const text of ['$$\\oops \\begin{cases} x & y \\end{cases}$$', '$$\\begin{cases} x & y \\end{cases}}$$']) {
+      const { errors } = validateLatex(text, WITH_DOLLARS);
+      assert.equal(errors.length, 1, text);
+      assert.equal(errors[0].position, 0, text);
+    }
   });
 
   test("environments KaTeX lacks keep today's check of their body", () => {
