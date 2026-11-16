@@ -231,14 +231,20 @@ describe('the scan stops at 50 errors (I-1238)', () => {
     });
   }
 
-  // KaTeX's own time on one formula grows faster than its length: one $$ formula of 160,000 letters took 8.5 s
-  // (Codex's fourth review of I-1237), and \( \) and custom delimiters reach KaTeX too. Math over 8,000 characters is
-  // an error unread.
+  // KaTeX's own time grows faster than what it draws: one $$ formula of 160,000 letters took 8.5 s (Codex review 4),
+  // and a 2,168-character formula that defines a 2,000-letter macro and uses it 80 times over 10 s (Codex review 5).
+  // \( \) and custom delimiters reach KaTeX too. Math over 8,000 characters or defining a macro passes unread.
+  const defined = (define) => `${define}{${'x'.repeat(2_000)}}${'\\a'.repeat(80)}`;
   const longMath = [
-    ['one $$ formula of 250,000 letters', [`$$${'x'.repeat(250_000)}$$`], [['too_long', 0]]],
-    ['one \\( formula of 250,000 letters', [`\\(${'x'.repeat(250_000)}\\)`], [['too_long', 0]]],
-    ['one formula of 250,000 letters in custom delimiters', [`<m>${'x'.repeat(250_000)}</m>`, [delimiter('<m>', '</m>')]], [['too_long', 0]]],
+    ['one $$ formula of 250,000 letters', [`$$${'x'.repeat(250_000)}$$`], []],
+    ['one \\( formula of 250,000 letters', [`\\(${'x'.repeat(250_000)}\\)`], []],
+    ['one formula of 250,000 letters in custom delimiters', [`<m>${'x'.repeat(250_000)}</m>`, [delimiter('<m>', '</m>')]], []],
     ['31 $$ formulas of 8,000 letters, the longest read', [`$$${'x'.repeat(8_000)}$$ `.repeat(31)], []],
+    ['an 8,001-letter formula with an error, unread', [`$$\\oops ${'x'.repeat(7_995)}$$`], []],
+    ['and an 8,000-letter one, read', [`$$\\oops ${'x'.repeat(7_994)}$$`], [['katex_error', 0]]],
+    ...['\\def\\a', '\\gdef\\a', '\\edef\\a', '\\xdef\\a', '\\newcommand{\\a}', '\\renewcommand{\\a}', '\\providecommand{\\a}']
+      .map((define) => [`110 $$ formulas that ${define} 2,000 letters and use it 80 times`, [`$$${defined(define)}$$ `.repeat(110)], []]),
+    ['\\let and \\global\\def in \\( and custom delimiters', [`\\(\\let\\b=x ${defined('\\global\\def\\a')}\\) <m>${defined('\\def\\a')}</m>`.repeat(50), [delimiter('\\(', '\\)'), delimiter('<m>', '</m>')]], []],
   ];
   for (const [name, args, want] of longMath) {
     test(`${name}, about 250 KB, answers at once`, async () => {
@@ -278,19 +284,21 @@ describe('the scan stops at 50 errors (I-1238)', () => {
     }
   });
 
-  test('POST /validate/latex gives the backend an error to repair for a long formula and for a stop in citations', async () => {
+  test('POST /validate/latex passes math it does not read, and gives a stop in citations an error to repair', async () => {
     const app = new AppInWorker();
     await app.start();
     try {
+      // No repair for math this check has no verdict on (Codex review 5).
       const long = await app.post({ text: `Area $$${'x'.repeat(160_000)}$$` });
       assert.notEqual(long, TIMED_OUT, 'the request stalled');
-      assert.equal(long.status, 400);
-      assert.deepEqual(long.body.errors.map(({ type, position }) => [type, position]), [['too_long', 5]]);
-      assert.equal(long.body.error, 'Found 1 LaTeX error(s)');
+      assert.deepEqual([long.status, long.body], [200, { valid: true }]);
+      const macro = await app.post({ text: `So $$\\def\\a{${'x'.repeat(2_000)}}${'\\a'.repeat(80)}$$` });
+      assert.notEqual(macro, TIMED_OUT, 'the request stalled');
+      assert.deepEqual([macro.status, macro.body], [200, { valid: true }]);
       // Every opener the stop counted sits in a source chip, which the apps hide (Codex review 4).
       const hidden = await app.post({ text: `【3, source: "${'\\('.repeat(51)}"】` });
       assert.equal(hidden.status, 400);
-      assert.deepEqual(hidden.body.errors.map(({ type, position }) => [type, position]), [['unclosed', 13 + 50 * 2]]);
+      assert.deepEqual(hidden.body.errors.map(({ type, position }) => [type, position]), [['stopped', 13 + 50 * 2]]);
       assert.equal(hidden.body.error, 'Found 1 LaTeX error(s), then stopped; the text may hold more');
     } finally {
       await app.stop();

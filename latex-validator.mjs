@@ -74,14 +74,17 @@ const BEGIN_IN_TEXT = /\\begin\{([A-Za-z]{1,16}\*?)\}/g;
 // as in a_1 or x_{i} (MATH_SIGN): Markdown's _emphasis_ has a space or punctuation on one side.
 const SINGLE_DOLLAR_MATH = /(?<![\\$])\$(?![\s$])((?:[^$\n\\]|\\[^\n])*?)(?<!\s)\$(?![\w$])/g;
 const MATH_SIGN = /\\[A-Za-z]|\^|[A-Za-z0-9}]_[A-Za-z0-9{\\]/;
-// A second $ that is money, not the end of math: a unit "($)" or a code "(US$)" in parentheses after a space, as in
-// the table header "Price ($/m^2) | Total ($)" or "$5/m^2 (US$)", or a two-letter dollar code after a space, as in
-// "$12/m^2, or 9 HK$ a day". Formulas end otherwise: "$x+\left($" and "$f^2(X$" have no space before "(", and
-// "$2^x + C$" ends in one capital.
-const CURRENCY_CLOSE = /(?:^|\s)\((?:[A-Z]{1,3})?$|\s(?:AU|CA|HK|MX|NT|NZ|SG|US)$/;
+// A second $ that is money, not the end of math: a unit "($)" or a code "(US$)" in parentheses (CURRENCY_LABEL, when
+// a ")" follows the $), as in the table header "Price ($/m^2) | Total($)" or "$5/m^2(US$)", or a two-letter dollar
+// code after an amount (CURRENCY_AFTER_AMOUNT), as in "$12/m^2, or 9 HK$ a day". Formulas end otherwise:
+// "$x+\left($ stops" and "$f^2(X$." have no ")" after the $, and "$A^T US$" and "$x^2 + US$" no amount before the code.
+const CURRENCY_LABEL = /\((?:[A-Z]{1,3})?$/;
+const CURRENCY_AFTER_AMOUNT = /\d\s(?:AU|CA|HK|MX|NT|NZ|SG|US)$/;
 
-// Error types beside "unclosed" and "katex_error": LaTeX the student sees as text because the apps don't draw it.
+// Error types beside "unclosed" and "katex_error": LaTeX the student sees as text because the apps don't draw it,
+// and the stop at MAX_ERRORS when every opener it counted sat hidden in a citation.
 const SHOWN_AS_TEXT = "shown_as_text";
+const STOPPED = "stopped";
 // U+FFFC OBJECT REPLACEMENT CHARACTER: what the prose patterns read in place of a source chip.
 const OBJECT = "￼";
 // How much of the text an error quotes after an opener that has no end.
@@ -108,10 +111,15 @@ const MAX_DELIMITER_LENGTH = 64;
 // scans and its error list to 50 entries.
 const MAX_ERRORS = 50;
 
-// KaTeX's time on one formula grows faster than its length: 16,000 letters took 21 ms, 80,000 1.6 s and 160,000
-// 8.5 s on Node's only thread (ops I-1237, Codex review 4). Longer math is an error unread (`too_long`), which keeps
-// a 256 KB text of such formulas under a second. The longest math in a week of real summaries was 323 characters.
+// KaTeX's time on one formula grows faster than what it draws: 16,000 letters took 21 ms, 80,000 1.6 s and 160,000
+// 8.5 s on Node's only thread (ops I-1237, Codex review 4), and 2,168 characters that define a 2,000-letter macro and
+// use it 80 times kept it busy over 10 s (Codex review 5). Math longer than MAX_MATH_LENGTH, or holding a macro
+// definition (MACRO_DEFINITION), is passed unread: this check has no verdict for it, and a repair would rewrite math
+// the apps may draw well (Codex review 5: a 10,000-character pmatrix draws in 28 ms). That keeps a 256 KB text under
+// a second. In a week of real text, the longest math was 323 characters and no math defined a macro.
 const MAX_MATH_LENGTH = 8000;
+// KaTeX's commands that define a macro (katex/src/macros.js and functions/def.js).
+const MACRO_DEFINITION = /\\(?:[gex]?def|let|futurelet|global|(?:re)?newcommand|providecommand)(?![A-Za-z])/;
 
 /**
  * Why custom delimiters can't be used, or null when they can: an array of 1 to MAX_DELIMITERS objects, each
@@ -343,19 +351,10 @@ function scanDelimiters(text, delimiters, macros, errors, maxErrors, quoted = te
 
 /**
  * The error for the math `text` holds from `start` to `end`, `math` as KaTeX is given it, or null when KaTeX draws
- * it. Math longer than MAX_MATH_LENGTH is an error unread: KaTeX's own time grows faster than the formula.
+ * it. Math over MAX_MATH_LENGTH or holding a macro definition is null unread: KaTeX's time on it has no bound.
  */
 function mathError(text, start, end, math, displayMode, macros, hint = "") {
-  if (math.length > MAX_MATH_LENGTH) {
-    return {
-      message: `Math too long to check: ${math.length} characters at position ${start}, over the ` +
-        `${MAX_MATH_LENGTH} this check reads in one formula. Split it into smaller formulas.`,
-      position: start,
-      length: end - start,
-      latex: text.slice(start, Math.min(start + QUOTE_LENGTH, end)) + "...",
-      type: "too_long",
-    };
-  }
+  if (math.length > MAX_MATH_LENGTH || MACRO_DEFINITION.test(math)) return null;
   try {
     katex.renderToString(math, { displayMode, macros, throwOnError: true });
     return null;
@@ -423,7 +422,8 @@ function proseErrors(text, shown, start, end) {
     ));
   }
   for (const match of prose.matchAll(SINGLE_DOLLAR_MATH)) {
-    if (!MATH_SIGN.test(match[1]) || CURRENCY_CLOSE.test(match[1])) continue;
+    const label = CURRENCY_LABEL.test(match[1]) && prose[match.index + match[0].length] === ")";
+    if (!MATH_SIGN.test(match[1]) || label || CURRENCY_AFTER_AMOUNT.test(match[1])) continue;
     const at = start + match.index;
     found.push(shownAsTextError(
       text,
@@ -512,13 +512,14 @@ function validateAsAppsDraw(text, macros) {
   // the backend repairs a failing text from its errors.
   if (stoppedEarly && errors.length === 0) {
     const last = parts[parts.length - 1];
-    errors.push(unclosedError(
-      text,
-      last.start,
-      last.delimiter.open,
-      `: the check stopped here after ${limit} LaTeX openers the apps leave unclosed inside citations (【...】), ` +
-        "where they are hidden. Take the LaTeX out of the citations.",
-    ));
+    errors.push({
+      message: `Check stopped at position ${last.start}: ${limit} LaTeX openers inside citations (【...】) are ` +
+        "not drawn as math, and the check reads no further. Take the LaTeX out of the citations.",
+      position: last.start,
+      length: last.delimiter.open.length,
+      latex: text.slice(last.start, Math.min(last.start + QUOTE_LENGTH, text.length)) + "...",
+      type: STOPPED,
+    });
   }
 
   errors.sort((a, b) => a.position - b.position);
