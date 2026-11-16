@@ -17,7 +17,6 @@ import {
 export const EXPORT_BODY_LIMIT = '8mb';
 // "answer_key": the answers to the questions before it, which the print page starts on a new page (ops I-1313).
 export const OUTPUT_KINDS = Object.freeze(['answer', 'summary', 'answer_key']);
-export const MAX_OUTPUTS = 20;
 export const MAX_CHUNKS = 10_000;
 const MAX_TITLE = 300;
 const MAX_LANGUAGE = 35;
@@ -32,8 +31,9 @@ export function documentProblem(body) {
   if (!isText(doc.title, MAX_TITLE)) return '"document.title" must be a string of at most 300 characters';
   if (doc.language !== undefined && !isText(doc.language, MAX_LANGUAGE)) return '"document.language" must be a short string';
   if (doc.direction !== undefined && !DIRECTIONS.has(doc.direction)) return '"document.direction" must be "ltr" or "rtl"';
-  if (!Array.isArray(doc.outputs) || doc.outputs.length === 0 || doc.outputs.length > MAX_OUTPUTS) {
-    return `"document.outputs" must hold 1 to ${MAX_OUTPUTS} outputs`;
+  // No count cap: a file prints every answer it names (Soami, 2026-11-15), and EXPORT_BODY_LIMIT bounds the request.
+  if (!Array.isArray(doc.outputs) || doc.outputs.length === 0) {
+    return '"document.outputs" must hold at least one output';
   }
   for (const output of doc.outputs) {
     if (!output || typeof output !== 'object' || !OUTPUT_KINDS.includes(output.kind)) {
