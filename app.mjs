@@ -77,10 +77,12 @@ export function createApp({
       if (result.isValid) {
         return res.json({ valid: true });
       } else {
+        // The scan stops at its error cap (ops I-1238); the backend puts this line in its fix prompt.
+        const found = `Found ${result.errors.length} LaTeX error(s)`;
         return res.status(400).json({
           valid: false,
           errors: result.errors,
-          error: `Found ${result.errors.length} LaTeX error(s)`
+          error: result.truncated ? `${found}, then stopped; the text may hold more` : found,
         });
       }
     } catch (error) {
