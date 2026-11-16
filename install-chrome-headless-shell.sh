@@ -16,8 +16,8 @@
 # 1.64.1 bundles 156 and passes on 157.0.8103.38 and 157.0.8103.50).
 set -eu
 
-VERSION=157.0.8103.50
-SHA256=7bf0d41e424efd1d6281c4162993ab9dc5de92fac213c211614905a71c057d0f
+VERSION=157.0.8103.78
+SHA256=f90329720fb61e5a76da9b6b509b6ad12a484c9c5df0359403e935177c6d153a
 
 zip=/tmp/chrome-headless-shell-linux64.zip
 apt-get update
