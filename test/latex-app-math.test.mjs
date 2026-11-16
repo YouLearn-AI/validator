@@ -93,6 +93,8 @@ describe('math between single dollars is shown as text (I-1237)', () => {
   for (const text of [
     'Half is $\\frac{1}{2$ here.', 'So $\\foo{x}$ here.', 'So $x^2$ here.', 'Let $a_1$ be the first.', 'So $2^{10}$ bytes.',
     'Then $A^T A$ is square.', 'The solution is $2^x + C$.', 'So $2 \\times X$ here.', 'So $2^n I$ here.',
+    // A formula cut off after "(" (Codex review 4): no space before the "(", so not a currency unit or code.
+    'Then $x+\\left($ stops.', 'Evaluate $f^2(X$.',
   ]) {
     test(`${JSON.stringify(text)} fails`, () => {
       assert.deepEqual(types(text), ['shown_as_text']);
@@ -108,6 +110,7 @@ describe('math between single dollars is shown as text (I-1237)', () => {
     'Costs $5 and $10.', 'From $5-$10 a day.', 'It is \\$5 or \\$x^2\\$.', 'A $ sign and a ^ caret.', 'Pay $3, get $x',
     'Set $HOME_DIR/$USER_NAME first.', 'Use $HOME_DIR/$USER for the path.', 'Price: $5 _each_ (US$).', '$$x$$',
     'The rate is $5/m^2 (US$).', 'Rent is $12/m^2, or HK$9 a day.', '| Price ($/m^2) | Total ($) |\n| --- | --- |\n| 5 | 100 |',
+    'Rent is $12/m^2, or 9 HK$ a day.', 'It costs $3/m^2 (A$) here.',
   ]) {
     test(`${JSON.stringify(text)} passes`, () => {
       assert.deepEqual(validateLatex(text).errors, []);
@@ -196,9 +199,15 @@ describe('citations, as the apps read them (I-1237)', () => {
     }
   });
 
-  test('openers inside source chips count toward the stop at 50, and a text the check did not finish is not valid', () => {
-    const result = validateLatex(`【1, source: "${'\\( '.repeat(60)}"】 and $$\\oops$$`);
-    assert.deepEqual(result, { isValid: false, errors: [], truncated: true });
+  test('openers inside source chips count toward the stop at 50; the stop is then the error, so a repair has one', () => {
+    // A text the check did not finish is not valid. With every counted opener hidden in a chip, the stop itself is
+    // named (Codex review 4): an answer of no errors would send the backend's repair nothing to fix.
+    const text = `【1, source: "${'\\( '.repeat(60)}"】 and $$\\oops$$`;
+    const { isValid, errors, truncated } = validateLatex(text);
+    assert.equal(isValid, false);
+    assert.equal(truncated, true);
+    assert.deepEqual(errors.map(({ type, position }) => [type, position]), [['unclosed', 13 + 50 * 3]]);
+    assert.match(errors[0].message, /stopped here after 51 LaTeX openers .* inside citations/);
   });
 });
 

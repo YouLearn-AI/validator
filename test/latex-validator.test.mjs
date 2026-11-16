@@ -231,6 +231,23 @@ describe('the scan stops at 50 errors (I-1238)', () => {
     });
   }
 
+  // KaTeX's own time on one formula grows faster than its length: one $$ formula of 160,000 letters took 8.5 s
+  // (Codex's fourth review of I-1237), and \( \) and custom delimiters reach KaTeX too. Math over 8,000 characters is
+  // an error unread.
+  const longMath = [
+    ['one $$ formula of 250,000 letters', [`$$${'x'.repeat(250_000)}$$`], [['too_long', 0]]],
+    ['one \\( formula of 250,000 letters', [`\\(${'x'.repeat(250_000)}\\)`], [['too_long', 0]]],
+    ['one formula of 250,000 letters in custom delimiters', [`<m>${'x'.repeat(250_000)}</m>`, [delimiter('<m>', '</m>')]], [['too_long', 0]]],
+    ['31 $$ formulas of 8,000 letters, the longest read', [`$$${'x'.repeat(8_000)}$$ `.repeat(31)], []],
+  ];
+  for (const [name, args, want] of longMath) {
+    test(`${name}, about 250 KB, answers at once`, async () => {
+      const answer = await callInWorker('validateLatex', ...args);
+      assert.notEqual(answer, TIMED_OUT, 'the check stalled');
+      assert.deepEqual(answer.result.errors.map(({ type, position }) => [type, position]), want);
+    });
+  }
+
   test('fewer errors than the cap are all listed', async () => {
     const answer = await callInWorker('validateLatex', 'a \\( b \\( c \\( d');
     assert.equal(answer.result.errors.length, 3);
@@ -256,6 +273,25 @@ describe('the scan stops at 50 errors (I-1238)', () => {
       assert.equal(answer.status, 400);
       assert.equal(answer.body.errors.length, CAP);
       assert.equal(answer.body.error, 'Found 50 LaTeX error(s), then stopped; the text may hold more');
+    } finally {
+      await app.stop();
+    }
+  });
+
+  test('POST /validate/latex gives the backend an error to repair for a long formula and for a stop in citations', async () => {
+    const app = new AppInWorker();
+    await app.start();
+    try {
+      const long = await app.post({ text: `Area $$${'x'.repeat(160_000)}$$` });
+      assert.notEqual(long, TIMED_OUT, 'the request stalled');
+      assert.equal(long.status, 400);
+      assert.deepEqual(long.body.errors.map(({ type, position }) => [type, position]), [['too_long', 5]]);
+      assert.equal(long.body.error, 'Found 1 LaTeX error(s)');
+      // Every opener the stop counted sits in a source chip, which the apps hide (Codex review 4).
+      const hidden = await app.post({ text: `【3, source: "${'\\('.repeat(51)}"】` });
+      assert.equal(hidden.status, 400);
+      assert.deepEqual(hidden.body.errors.map(({ type, position }) => [type, position]), [['unclosed', 13 + 50 * 2]]);
+      assert.equal(hidden.body.error, 'Found 1 LaTeX error(s), then stopped; the text may hold more');
     } finally {
       await app.stop();
     }

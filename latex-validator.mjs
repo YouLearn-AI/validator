@@ -69,16 +69,16 @@ const BEGIN_IN_TEXT = /\\begin\{([A-Za-z]{1,16}\*?)\}/g;
 // Math between single dollars, on one line, as Pandoc's tex_math_dollars reads it: the opening $ has a non-space
 // after it, the closing $ a non-space before it and no digit after it, so "$5 and $10" is not math, and a backslash
 // escapes the character after it, so "\$" neither opens nor closes it. Stricter than Pandoc, no letter or _ may
-// follow the closing $ either, so shell variables like "$HOME_DIR/$USER" are not math, and no "(" may come just
-// before it, which no formula ends with, so the table header "Price ($/m^2) | Total ($)" is two units. The apps
-// draw only $$ ... $$, so such math shows as text. It counts only when it holds a command, a ^, or a _ between
-// letters, digits or braces as in a_1 or x_{i} (MATH_SIGN): Markdown's _emphasis_ has a space or punctuation on one
-// side.
-const SINGLE_DOLLAR_MATH = /(?<![\\$])\$(?![\s$])((?:[^$\n\\]|\\[^\n])*?)(?<![\s(])\$(?![\w$])/g;
+// follow the closing $ either, so shell variables like "$HOME_DIR/$USER" are not math. The apps draw only $$ ... $$,
+// so such math shows as text. It counts only when it holds a command, a ^, or a _ between letters, digits or braces
+// as in a_1 or x_{i} (MATH_SIGN): Markdown's _emphasis_ has a space or punctuation on one side.
+const SINGLE_DOLLAR_MATH = /(?<![\\$])\$(?![\s$])((?:[^$\n\\]|\\[^\n])*?)(?<!\s)\$(?![\w$])/g;
 const MATH_SIGN = /\\[A-Za-z]|\^|[A-Za-z0-9}]_[A-Za-z0-9{\\]/;
-// A second $ that belongs to a currency code in parentheses, as in "$5/m^2 (US$)": money, not math. No formula ends
-// in "(" and capitals, while "$2^x + C$" does end in capitals.
-const CURRENCY_CODE_CLOSE = /\([A-Z]{1,3}$/;
+// A second $ that is money, not the end of math: a unit "($)" or a code "(US$)" in parentheses after a space, as in
+// the table header "Price ($/m^2) | Total ($)" or "$5/m^2 (US$)", or a two-letter dollar code after a space, as in
+// "$12/m^2, or 9 HK$ a day". Formulas end otherwise: "$x+\left($" and "$f^2(X$" have no space before "(", and
+// "$2^x + C$" ends in one capital.
+const CURRENCY_CLOSE = /(?:^|\s)\((?:[A-Z]{1,3})?$|\s(?:AU|CA|HK|MX|NT|NZ|SG|US)$/;
 
 // Error types beside "unclosed" and "katex_error": LaTeX the student sees as text because the apps don't draw it.
 const SHOWN_AS_TEXT = "shown_as_text";
@@ -107,6 +107,11 @@ const MAX_DELIMITER_LENGTH = 64;
 // body holds, 46 s, with a 17.6 MB answer listing every error (ops I-1238). The cap bounds a check to 50 such
 // scans and its error list to 50 entries.
 const MAX_ERRORS = 50;
+
+// KaTeX's time on one formula grows faster than its length: 16,000 letters took 21 ms, 80,000 1.6 s and 160,000
+// 8.5 s on Node's only thread (ops I-1237, Codex review 4). Longer math is an error unread (`too_long`), which keeps
+// a 256 KB text of such formulas under a second. The longest math in a week of real summaries was 323 characters.
+const MAX_MATH_LENGTH = 8000;
 
 /**
  * Why custom delimiters can't be used, or null when they can: an array of 1 to MAX_DELIMITERS objects, each
@@ -326,8 +331,8 @@ function scanDelimiters(text, delimiters, macros, errors, maxErrors, quoted = te
       ? text.slice(startPos, end)
       : text.slice(startPos + leftDelimLength, endPos);
 
-    const problem = katexProblem(latexContent, delimiter.display, macros);
-    if (problem) errors.push(katexError(quoted, startPos, end, problem));
+    const error = mathError(quoted, startPos, end, latexContent, delimiter.display, macros);
+    if (error) errors.push(error);
 
     // Move position past the closing delimiter
     position = end;
@@ -336,13 +341,26 @@ function scanDelimiters(text, delimiters, macros, errors, maxErrors, quoted = te
   return position;
 }
 
-/** KaTeX's error message for this math, or null when KaTeX draws it. */
-function katexProblem(math, displayMode, macros) {
+/**
+ * The error for the math `text` holds from `start` to `end`, `math` as KaTeX is given it, or null when KaTeX draws
+ * it. Math longer than MAX_MATH_LENGTH is an error unread: KaTeX's own time grows faster than the formula.
+ */
+function mathError(text, start, end, math, displayMode, macros, hint = "") {
+  if (math.length > MAX_MATH_LENGTH) {
+    return {
+      message: `Math too long to check: ${math.length} characters at position ${start}, over the ` +
+        `${MAX_MATH_LENGTH} this check reads in one formula. Split it into smaller formulas.`,
+      position: start,
+      length: end - start,
+      latex: text.slice(start, Math.min(start + QUOTE_LENGTH, end)) + "...",
+      type: "too_long",
+    };
+  }
   try {
     katex.renderToString(math, { displayMode, macros, throwOnError: true });
     return null;
   } catch (error) {
-    return error.message;
+    return katexError(text, start, end, error.message, hint);
   }
 }
 
@@ -405,7 +423,7 @@ function proseErrors(text, shown, start, end) {
     ));
   }
   for (const match of prose.matchAll(SINGLE_DOLLAR_MATH)) {
-    if (!MATH_SIGN.test(match[1]) || CURRENCY_CODE_CLOSE.test(match[1])) continue;
+    if (!MATH_SIGN.test(match[1]) || CURRENCY_CLOSE.test(match[1])) continue;
     const at = start + match.index;
     found.push(shownAsTextError(
       text,
@@ -474,13 +492,11 @@ function validateAsAppsDraw(text, macros) {
     addProse(part.start);
     if (errors.length >= limit) break;
     if (part.kind === "math") {
-      const problem = katexProblem(part.content, part.display, macros);
-      if (problem) {
-        const bare = part.delimiter.open.startsWith("\\begin{")
-          ? `. The apps draw a bare ${part.delimiter.open} by its body alone: put it inside $$ ... $$.`
-          : "";
-        errors.push(katexError(text, part.start, part.end, problem, bare));
-      }
+      const bare = part.delimiter.open.startsWith("\\begin{")
+        ? `. The apps draw a bare ${part.delimiter.open} by its body alone: put it inside $$ ... $$.`
+        : "";
+      const error = mathError(text, part.start, part.end, part.content, part.display, macros, bare);
+      if (error) errors.push(error);
     }
     blanked.push([part.start, part.end]);
     proseStart = part.end;
@@ -491,6 +507,18 @@ function validateAsAppsDraw(text, macros) {
     const outside = blankOut(text, blanked);
     const end = stoppedEarly ? proseStart : text.length;
     scanDelimiters(outside.slice(0, end), PROSE_DELIMITERS, macros, errors, limit, text);
+  }
+  // Every opener the stop counted sat in a citation (one outside would be an error above), so name the stop itself:
+  // the backend repairs a failing text from its errors.
+  if (stoppedEarly && errors.length === 0) {
+    const last = parts[parts.length - 1];
+    errors.push(unclosedError(
+      text,
+      last.start,
+      last.delimiter.open,
+      `: the check stopped here after ${limit} LaTeX openers the apps leave unclosed inside citations (【...】), ` +
+        "where they are hidden. Take the LaTeX out of the citations.",
+    ));
   }
 
   errors.sort((a, b) => a.position - b.position);
