@@ -69,13 +69,16 @@ const BEGIN_IN_TEXT = /\\begin\{([A-Za-z]{1,16}\*?)\}/g;
 // Math between single dollars, on one line, as Pandoc's tex_math_dollars reads it: the opening $ has a non-space
 // after it, the closing $ a non-space before it and no digit after it, so "$5 and $10" is not math, and a backslash
 // escapes the character after it, so "\$" neither opens nor closes it. Stricter than Pandoc, no letter or _ may
-// follow the closing $ either, so shell variables like "$HOME_DIR/$USER" are not math. The apps draw only
-// $$ ... $$, so such math shows as text. It counts only when it holds a command, a ^, or a _ between letters, digits
-// or braces as in a_1 or x_{i} (MATH_SIGN): Markdown's _emphasis_ has a space or punctuation on one side.
-const SINGLE_DOLLAR_MATH = /(?<![\\$])\$(?![\s$])((?:[^$\n\\]|\\[^\n])*?)(?<!\s)\$(?![\w$])/g;
+// follow the closing $ either, so shell variables like "$HOME_DIR/$USER" are not math, and no "(" may come just
+// before it, which no formula ends with, so the table header "Price ($/m^2) | Total ($)" is two units. The apps
+// draw only $$ ... $$, so such math shows as text. It counts only when it holds a command, a ^, or a _ between
+// letters, digits or braces as in a_1 or x_{i} (MATH_SIGN): Markdown's _emphasis_ has a space or punctuation on one
+// side.
+const SINGLE_DOLLAR_MATH = /(?<![\\$])\$(?![\s$])((?:[^$\n\\]|\\[^\n])*?)(?<![\s(])\$(?![\w$])/g;
 const MATH_SIGN = /\\[A-Za-z]|\^|[A-Za-z0-9}]_[A-Za-z0-9{\\]/;
-// A price, and a currency code ending in the second $, as in "$5/m^2 (US$)": money, not math.
-const PRICE_THEN_CURRENCY = /^\d.*[\s(][A-Z]{1,3}$/;
+// A second $ that belongs to a currency code in parentheses, as in "$5/m^2 (US$)": money, not math. No formula ends
+// in "(" and capitals, while "$2^x + C$" does end in capitals.
+const CURRENCY_CODE_CLOSE = /\([A-Z]{1,3}$/;
 
 // Error types beside "unclosed" and "katex_error": LaTeX the student sees as text because the apps don't draw it.
 const SHOWN_AS_TEXT = "shown_as_text";
@@ -402,7 +405,7 @@ function proseErrors(text, shown, start, end) {
     ));
   }
   for (const match of prose.matchAll(SINGLE_DOLLAR_MATH)) {
-    if (!MATH_SIGN.test(match[1]) || PRICE_THEN_CURRENCY.test(match[1])) continue;
+    if (!MATH_SIGN.test(match[1]) || CURRENCY_CODE_CLOSE.test(match[1])) continue;
     const at = start + match.index;
     found.push(shownAsTextError(
       text,

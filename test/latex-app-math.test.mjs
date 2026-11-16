@@ -92,7 +92,7 @@ describe('math between single dollars is shown as text (I-1237)', () => {
   // Both apps call the tokenizer with singleDollarMath false, so $...$ is never math there.
   for (const text of [
     'Half is $\\frac{1}{2$ here.', 'So $\\foo{x}$ here.', 'So $x^2$ here.', 'Let $a_1$ be the first.', 'So $2^{10}$ bytes.',
-    'Then $A^T A$ is square.',
+    'Then $A^T A$ is square.', 'The solution is $2^x + C$.', 'So $2 \\times X$ here.', 'So $2^n I$ here.',
   ]) {
     test(`${JSON.stringify(text)} fails`, () => {
       assert.deepEqual(types(text), ['shown_as_text']);
@@ -107,7 +107,7 @@ describe('math between single dollars is shown as text (I-1237)', () => {
   for (const text of [
     'Costs $5 and $10.', 'From $5-$10 a day.', 'It is \\$5 or \\$x^2\\$.', 'A $ sign and a ^ caret.', 'Pay $3, get $x',
     'Set $HOME_DIR/$USER_NAME first.', 'Use $HOME_DIR/$USER for the path.', 'Price: $5 _each_ (US$).', '$$x$$',
-    'The rate is $5/m^2 (US$).', 'Rent is $12/m^2, or 9 HK$ a day.',
+    'The rate is $5/m^2 (US$).', 'Rent is $12/m^2, or HK$9 a day.', '| Price ($/m^2) | Total ($) |\n| --- | --- |\n| 5 | 100 |',
   ]) {
     test(`${JSON.stringify(text)} passes`, () => {
       assert.deepEqual(validateLatex(text).errors, []);
