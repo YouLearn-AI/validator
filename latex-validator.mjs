@@ -70,6 +70,12 @@ function isKatexEnvironment({ left, right }) {
 const MAX_DELIMITERS = 64;
 const MAX_DELIMITER_LENGTH = 64;
 
+// The scan stops at this many errors. Each unclosed opener scans to the end of the text, so a text of them took
+// time in the square of its length on Node's only thread: 32 KB of "\(" took 3.3 s, and 170 KB, the most a 256 KB
+// body holds, 46 s, with a 17.6 MB answer listing every error (ops I-1238). The cap bounds a check to 50 such
+// scans and its error list to 50 entries.
+const MAX_ERRORS = 50;
+
 /**
  * Why custom delimiters can't be used, or null when they can: an array of 1 to MAX_DELIMITERS objects, each
  * with a non-empty `left` string, a `right` string (empty for an opener that has no closer, like \item), both
@@ -234,7 +240,8 @@ function findDelimiterAtPosition(
  * @param text The text to validate
  * @param delimiters Optional custom delimiters (defaults to the ones from markdown.tsx)
  * @param macros Optional KaTeX macros
- * @returns Validation result with any errors found
+ * @returns Validation result with any errors found; `truncated` when the scan stopped at MAX_ERRORS, so the
+ *   text may hold more
  */
 export function validateLatex(
   text,
@@ -252,7 +259,7 @@ export function validateLatex(
   // Each pass must start past the previous one; an empty delimiter would start every pass at the same place.
   // The closing scan (findClose) always moves forward.
   let previousStart = -1;
-  while (position < text.length) {
+  while (position < text.length && errors.length < MAX_ERRORS) {
     if (position <= previousStart) {
       throw new LatexScanStalled(position);
     }
@@ -326,6 +333,7 @@ export function validateLatex(
   return {
     isValid: errors.length === 0,
     errors,
+    truncated: errors.length >= MAX_ERRORS,
   };
 }
 

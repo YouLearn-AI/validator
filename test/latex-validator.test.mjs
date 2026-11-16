@@ -181,6 +181,50 @@ describe('the scan never repeats a pass in place', () => {
 
   test('the default delimiters scan as before', async () => {
     const answer = await callInWorker('validateLatex', 'a \\(x\\) \\item b \\[\\frac{1}{2}\\] c');
-    assert.deepEqual(answer, { result: { isValid: true, errors: [] } });
+    assert.deepEqual(answer, { result: { isValid: true, errors: [], truncated: false } });
+  });
+});
+
+// Each unclosed opener scans to the end of the text, so a text of them took time in the square of its length:
+// 32 KB of "\(" took 3.3 s and 170 KB (the most a 256 KB body holds) 46 s on Node's only thread, and the 400
+// listed every error. The scan stops at 50 errors (ops I-1238).
+describe('the scan stops at 50 errors (I-1238)', () => {
+  const KB = 1024;
+  const CAP = 50;
+  const unclosed = [
+    ['unclosed \\(', '\\('.repeat(128 * KB)],
+    ['unclosed \\begin{cases}', '\\begin{cases}'.repeat(20 * KB)],
+    ['openers whose \\) sits inside braces', `${'\\( '.repeat(80 * KB)}{\\)}`],
+    ['prose with a stray \\( in each sentence', 'A sentence of prose with a stray \\( in it. '.repeat(6 * KB)],
+  ];
+  for (const [name, text] of unclosed) {
+    test(`${name}, about 256 KB, answers at once with the first 50 errors`, async () => {
+      const answer = await callInWorker('validateLatex', text);
+      assert.notEqual(answer, TIMED_OUT, 'the scan stalled');
+      assert.equal(answer.result.errors.length, CAP);
+      assert.equal(answer.result.truncated, true);
+      assert.ok(answer.result.errors.every((error) => error.type === 'unclosed'));
+    });
+  }
+
+  test('fewer errors than the cap are all listed', async () => {
+    const answer = await callInWorker('validateLatex', 'a \\( b \\( c \\( d');
+    assert.equal(answer.result.errors.length, 3);
+    assert.equal(answer.result.truncated, false);
+  });
+
+  test('POST /validate/latex says when it stopped at the cap', async () => {
+    const app = new AppInWorker();
+    await app.start();
+    try {
+      // 80,000 openers: 160 KB of text, 240 KB as JSON, under the 256 KB body limit.
+      const answer = await app.post({ text: '\\('.repeat(80_000) });
+      assert.notEqual(answer, TIMED_OUT, 'the request stalled');
+      assert.equal(answer.status, 400);
+      assert.equal(answer.body.errors.length, CAP);
+      assert.equal(answer.body.error, 'Found 50 LaTeX error(s), then stopped; the text may hold more');
+    } finally {
+      await app.stop();
+    }
   });
 });
