@@ -74,9 +74,13 @@ const BEGIN_IN_TEXT = /\\begin\{([A-Za-z]{1,16}\*?)\}/g;
 // or braces as in a_1 or x_{i} (MATH_SIGN): Markdown's _emphasis_ has a space or punctuation on one side.
 const SINGLE_DOLLAR_MATH = /(?<![\\$])\$(?![\s$])((?:[^$\n\\]|\\[^\n])*?)(?<!\s)\$(?![\w$])/g;
 const MATH_SIGN = /\\[A-Za-z]|\^|[A-Za-z0-9}]_[A-Za-z0-9{\\]/;
+// A price, and a currency code ending in the second $, as in "$5/m^2 (US$)": money, not math.
+const PRICE_THEN_CURRENCY = /^\d.*[\s(][A-Z]{1,3}$/;
 
 // Error types beside "unclosed" and "katex_error": LaTeX the student sees as text because the apps don't draw it.
 const SHOWN_AS_TEXT = "shown_as_text";
+// U+FFFC OBJECT REPLACEMENT CHARACTER: what the prose patterns read in place of a source chip.
+const OBJECT = "￼";
 // How much of the text an error quotes after an opener that has no end.
 const QUOTE_LENGTH = 50;
 
@@ -398,7 +402,7 @@ function proseErrors(text, shown, start, end) {
     ));
   }
   for (const match of prose.matchAll(SINGLE_DOLLAR_MATH)) {
-    if (!MATH_SIGN.test(match[1])) continue;
+    if (!MATH_SIGN.test(match[1]) || PRICE_THEN_CURRENCY.test(match[1])) continue;
     const at = start + match.index;
     found.push(shownAsTextError(
       text,
@@ -437,7 +441,10 @@ function validateAsAppsDraw(text, macros) {
   }
   const stoppedEarly = refused >= limit;
   const chips = reading.sourceTokens(parts);
-  const shown = blankOut(text, chips);
+  // The prose patterns read a chip, or a citation the apps cut from code, as one object: not a space, so
+  // "$x^2【3】$" is still math between single dollars, and nothing a pattern looks for.
+  const hidden = [...chips, ...reading.cutFromCode];
+  const shown = blankOut(text, [...hidden], OBJECT);
   let chip = 0;
   const inChip = (position) => {
     while (chip < chips.length && chips[chip][1] <= position) chip++;
@@ -445,7 +452,7 @@ function validateAsAppsDraw(text, macros) {
   };
 
   const errors = [];
-  const blanked = [...chips];
+  const blanked = hidden;
   let proseStart = 0;
   const addProse = (end) => {
     for (const error of proseErrors(text, shown, proseStart, end)) {
@@ -492,14 +499,14 @@ function validateAsAppsDraw(text, macros) {
   };
 }
 
-/** The text with each [start, end) span turned to spaces, so positions stay where they were. */
-function blankOut(text, spans) {
+/** The text with each [start, end) span turned to `fill`, so positions stay where they were. Sorts `spans`. */
+function blankOut(text, spans, fill = " ") {
   let blanked = "";
   let last = 0;
   for (const [start, end] of spans.sort((a, b) => a[0] - b[0])) {
     if (end <= last) continue;
     const from = Math.max(start, last);
-    blanked += text.slice(last, from) + " ".repeat(end - from);
+    blanked += text.slice(last, from) + fill.repeat(end - from);
     last = end;
   }
   return blanked + text.slice(last);

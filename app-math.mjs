@@ -353,6 +353,7 @@ function prepare(input) {
   const inputRanges = codeRanges(input);
   // removed[i] = [where in the result the i-th citation was cut out, the characters cut up to and including it]
   const removed = [];
+  const cutSpans = [];
   let text = input;
   if (inputIndex !== null && inputRanges.length > 0) {
     let kept = "";
@@ -363,6 +364,7 @@ function prepare(input) {
         kept += input.slice(last, start);
         cut += end - start;
         removed.push([kept.length, cut]);
+        cutSpans.push([start, end]);
         last = end;
       }
     }
@@ -370,7 +372,7 @@ function prepare(input) {
   }
   if (removed.length === 0) {
     const same = (position) => position;
-    return { text, index: inputIndex, ranges: inputRanges, toInputStart: same, toInputEnd: same };
+    return { text, index: inputIndex, ranges: inputRanges, cutSpans, toInputStart: same, toInputEnd: same };
   }
 
   // The characters cut before position p of the result: those at a place < p, or <= p for a character's start.
@@ -388,6 +390,7 @@ function prepare(input) {
     text,
     index: text.includes(SOURCE_OPEN) ? new CitationIndex(text) : null,
     ranges: codeRanges(text),
+    cutSpans,
     toInputStart: (p) => p + cutBefore(p, true),
     toInputEnd: (p) => p + cutBefore(p, false),
   };
@@ -412,11 +415,12 @@ function isOnOwnLine(text, start, closeEnd) {
  *   The scan goes on at the next character, as the apps' does.
  * A caller may stop early. Each refused opener costs at most one pass over the rest of the text; the rest is linear.
  * `sourceTokens(parts)` then gives the citations the apps draw as source chips: those that overlap none of the
- * math and code in `parts`. Positions are the given text's, as [start, end) spans.
+ * math and code in `parts`. `cutFromCode` holds the citations the apps removed from code before the scan. Both are
+ * [start, end) spans, and all positions are the given text's.
  * @param {string} input
  */
 export function readAsApps(input) {
-  const { text, index, ranges, toInputStart, toInputEnd } = prepare(input);
+  const { text, index, ranges, cutSpans, toInputStart, toInputEnd } = prepare(input);
 
   function* parts() {
     let range = 0;
@@ -476,7 +480,7 @@ export function readAsApps(input) {
     return tokens;
   }
 
-  return { parts: parts(), sourceTokens };
+  return { parts: parts(), sourceTokens, cutFromCode: cutSpans };
 }
 
 /** The parts of readAsApps alone. */

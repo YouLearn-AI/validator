@@ -90,7 +90,10 @@ describe('bare environments, as the apps draw them (I-1237)', () => {
 
 describe('math between single dollars is shown as text (I-1237)', () => {
   // Both apps call the tokenizer with singleDollarMath false, so $...$ is never math there.
-  for (const text of ['Half is $\\frac{1}{2$ here.', 'So $\\foo{x}$ here.', 'So $x^2$ here.', 'Let $a_1$ be the first.']) {
+  for (const text of [
+    'Half is $\\frac{1}{2$ here.', 'So $\\foo{x}$ here.', 'So $x^2$ here.', 'Let $a_1$ be the first.', 'So $2^{10}$ bytes.',
+    'Then $A^T A$ is square.',
+  ]) {
     test(`${JSON.stringify(text)} fails`, () => {
       assert.deepEqual(types(text), ['shown_as_text']);
     });
@@ -104,6 +107,7 @@ describe('math between single dollars is shown as text (I-1237)', () => {
   for (const text of [
     'Costs $5 and $10.', 'From $5-$10 a day.', 'It is \\$5 or \\$x^2\\$.', 'A $ sign and a ^ caret.', 'Pay $3, get $x',
     'Set $HOME_DIR/$USER_NAME first.', 'Use $HOME_DIR/$USER for the path.', 'Price: $5 _each_ (US$).', '$$x$$',
+    'The rate is $5/m^2 (US$).', 'Rent is $12/m^2, or 9 HK$ a day.',
   ]) {
     test(`${JSON.stringify(text)} passes`, () => {
       assert.deepEqual(validateLatex(text).errors, []);
@@ -168,6 +172,18 @@ describe('citations, as the apps read them (I-1237)', () => {
     assert.deepEqual(validateLatex('As 【3, source: "Use $$ for math"】 says.').errors, []);
     assert.deepEqual(validateLatex('【3, source: "$x^2$ and \\begin{cases}"】').errors, []);
     assert.deepEqual(types('Use $$ here 【3, source: "x"】.'), ['unclosed']);
+  });
+
+  test('what a citation removed from code held is not checked as prose', () => {
+    // Without its citations, "```【3】```" closes as one fence, and the second span's text is gone with its citation.
+    assert.deepEqual(validateLatex('```【3】``` `【3, source: "$x^2$"】`').errors, []);
+  });
+
+  test('single-dollar math around a source chip is still shown as text', () => {
+    for (const [text, latex] of [['Let $x^2【3】$ be the area.', '$x^2【3】$'], ['Let $【3】x^2$ be.', '$【3】x^2$']]) {
+      const { errors } = validateLatex(text);
+      assert.deepEqual(errors.map(({ type, position, latex: quoted }) => [type, position, quoted]), [['shown_as_text', 4, latex]]);
+    }
   });
 
   test('math the scan finds inside a citation is drawn, since the apps find math before citations', () => {
