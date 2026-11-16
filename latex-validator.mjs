@@ -240,8 +240,8 @@ function findDelimiterAtPosition(
  * @param text The text to validate
  * @param delimiters Optional custom delimiters (defaults to the ones from markdown.tsx)
  * @param macros Optional KaTeX macros
- * @returns Validation result with any errors found; `truncated` when the scan stopped at MAX_ERRORS, so the
- *   text may hold more
+ * @returns Validation result with any errors found; `truncated` when the scan stopped at MAX_ERRORS before the
+ *   end of the text, so the text may hold more
  */
 export function validateLatex(
   text,
@@ -333,7 +333,7 @@ export function validateLatex(
   return {
     isValid: errors.length === 0,
     errors,
-    truncated: errors.length >= MAX_ERRORS,
+    truncated: errors.length >= MAX_ERRORS && position < text.length,
   };
 }
 

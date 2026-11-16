@@ -213,6 +213,15 @@ describe('the scan stops at 50 errors (I-1238)', () => {
     assert.equal(answer.result.truncated, false);
   });
 
+  test('a scan that reaches the end with exactly 50 errors is not cut short; one more opener is', async () => {
+    const exact = await callInWorker('validateLatex', '\\('.repeat(CAP));
+    assert.equal(exact.result.errors.length, CAP);
+    assert.equal(exact.result.truncated, false);
+    const more = await callInWorker('validateLatex', '\\('.repeat(CAP + 1));
+    assert.equal(more.result.errors.length, CAP);
+    assert.equal(more.result.truncated, true);
+  });
+
   test('POST /validate/latex says when it stopped at the cap', async () => {
     const app = new AppInWorker();
     await app.start();
