@@ -13,7 +13,7 @@
 # first (`curl -I` gives x-goog-hash md5=...). When that Stable is a newer major than the Chromium this Playwright
 # bundles (node_modules/playwright-core/browsers.json), run the test suite against the same version first, with
 # CHROMIUM_EXECUTABLE_PATH set to Chrome for Testing's headless shell for your platform (ops I-1343: Playwright
-# 1.64.1 bundles 156 and passes on 157.0.8103.38 and 157.0.8103.50).
+# 1.64.1 bundles 156 and passes on 157.0.8103.38 and 157.0.8103.50; ops I-1865: and on 158.0.8127.36).
 set -eu
 
 VERSION=158.0.8127.36
