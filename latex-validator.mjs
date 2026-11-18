@@ -37,10 +37,11 @@ export const defaultDelimiters = [
   { left: "\\overline{", right: "}", display: false },
 ];
 
-// Every environment KaTeX 0.16.22 defines (node_modules/katex/src/environments/array.js). A delimiter pair
-// \begin{name} ... \end{name} for one of these is checked whole, its \begin and \end included, as KaTeX's
-// auto-render passes it (contrib/auto-render/splitAtDelimiters.js). Its body alone is not valid TeX: '&' and '\\'
-// separate cells and rows only inside the environment, so valid cases and matrices were flagged (ops I-1691).
+// Every environment KaTeX defines (node_modules/katex/src/environments/array.ts; the same set in 0.16.22 and 0.19.0,
+// ops I-515). A delimiter pair \begin{name} ... \end{name} for one of these is checked whole, its \begin and \end
+// included, as KaTeX's auto-render passes it (contrib/auto-render/splitAtDelimiters.js). Its body alone is not valid
+// TeX: '&' and '\\' separate cells and rows only inside the environment, so valid cases and matrices were flagged
+// (ops I-1691).
 // Environments KaTeX lacks (itemize, theorem, tabular, ...) keep the body check.
 export const KATEX_ENVIRONMENTS = new Set([
   "array", "darray", "subarray",
