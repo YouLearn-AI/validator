@@ -17,6 +17,18 @@ test('a middle dot in \\text{} passes, as the web app draws it', () => {
   assert.deepEqual(validateLatex('So \\(\\frac{\\text{x·y}}{2}\\) holds.').errors, []);
 });
 
+// The web app passes no `strict` option either (frontend apps/web-app/components/global/markdown-math.ts), so from
+// 0.19 a character with no font metrics only warns in both; were the check's strict to change, it would refuse this.
+test('words in other scripts in \\text{} pass, as the web app draws them', () => {
+  assert.deepEqual(validateLatex('\\(\\text{공헌이익률 café 日本}\\)').errors, []);
+});
+
+test('an environment KaTeX lacks still fails', () => {
+  const broken = validateLatex('\\(\\begin{foo}x\\end{foo}\\)');
+  assert.equal(broken.errors.length, 1);
+  assert.match(broken.errors[0].message, /No such environment: foo/);
+});
+
 test('a middle dot in math mode still passes, and an unknown command still fails', () => {
   assert.deepEqual(validateLatex('\\(a·b\\)').errors, []);
   const broken = validateLatex('\\(\\text{a·b} \\oops\\)');
