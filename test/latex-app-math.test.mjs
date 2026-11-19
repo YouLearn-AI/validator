@@ -213,10 +213,11 @@ describe('citations, as the apps read them (I-1237)', () => {
     }
   });
 
-  test('openers inside source chips count toward the stop at 50; the stop is then the error, so a repair has one', () => {
+  test('openers inside source chips count toward the stop at 50; the stop is then the error, so the text fails', () => {
     // A text the check did not finish is not valid. With every counted opener hidden in a chip, the stop itself is
-    // named (Codex review 4): an answer of no errors would send the backend's repair nothing to fix. It names no
-    // reason, since the openers may be unclosed or closed but refused (Codex review 5).
+    // named (Codex review 4), so the answer is not an empty list. The backend's repair skips a stopped error
+    // (latex_validator.py _error_span returns None) and keeps the text. It names no reason, since the openers may be
+    // unclosed or closed but refused (Codex review 5).
     const unclosed = `【1, source: "${'\\( '.repeat(60)}"】 and $$\\oops$$`;
     const refused = `【3, source: "${'\\(}\\)'.repeat(51)}"】`;
     for (const [text, at] of [[unclosed, 13 + 50 * 3], [refused, 13 + 50 * 5]]) {

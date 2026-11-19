@@ -299,7 +299,7 @@ describe('the scan stops at 50 errors (I-1238)', () => {
     }
   });
 
-  test('POST /validate/latex passes math it does not read, and gives a stop in citations an error to repair', async () => {
+  test('POST /validate/latex passes math it does not read, and names a stop in citations as an error', async () => {
     const app = new AppInWorker();
     await app.start();
     try {

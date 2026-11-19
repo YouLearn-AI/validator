@@ -118,7 +118,7 @@ const MAX_ERRORS = 50;
 // the apps may draw well (Codex review 5: a 10,000-character pmatrix draws in 28 ms). That keeps a 256 KB text under
 // a second. In a week of real text, the longest math was 323 characters and no math defined a macro.
 const MAX_MATH_LENGTH = 8000;
-// KaTeX's commands that define a macro (katex/src/macros.js and functions/def.js).
+// KaTeX's commands that define a macro (katex/src/macros.ts and src/functions/def.ts, 0.19.0).
 const MACRO_DEFINITION = /\\(?:[gex]?def|let|futurelet|global|(?:re)?newcommand|providecommand)(?![A-Za-z])/;
 // KaTeX's default strict mode, "warn", writes one stderr line for each LaTeX-incompatible character, such as each
 // CJK character in math: 10 formulas of 7,990 characters wrote 79,900 lines, 10.4 MB (ops I-1237, review 6).
@@ -513,7 +513,8 @@ function validateAsAppsDraw(text) {
     scanDelimiters(outside.slice(0, end), PROSE_DELIMITERS, errors, limit, text);
   }
   // Every opener the stop counted sat in a citation (one outside would be an error above), so name the stop itself:
-  // the backend repairs a failing text from its errors.
+  // a text the check did not finish is not valid. The backend's repair skips this error (its quote does not match its
+  // 2-character span: latex_validator.py _error_span returns None), so the text is kept as it is.
   if (stoppedEarly && errors.length === 0) {
     const last = parts[parts.length - 1];
     errors.push({
