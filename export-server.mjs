@@ -21,6 +21,9 @@ const origin = printOrigin(printUrl);
 if (!origin) {
   // eslint-disable-next-line no-console
   console.error('[EXPORT] EXPORT_PRINT_URL is not an http(s) URL: every export is refused');
+} else if (!origin.reachable) {
+  // eslint-disable-next-line no-console
+  console.error('[EXPORT] EXPORT_PRINT_URL must be https on port 443, or on this machine: every export is refused');
 }
 const trusted = origin?.loopback ? [{ host: origin.host, port: origin.port }] : [];
 if (trusted.length) {
@@ -42,7 +45,7 @@ const browser = new GuardedBrowser({
 });
 const word = new WordConverter();
 const app = createExportApp({
-  render: origin ? createExportRenderer(browser, { printUrl, word }) : async () => {
+  render: origin?.reachable ? createExportRenderer(browser, { printUrl, word }) : async () => {
     throw new ExportFailed('config', 'unconfigured');
   },
 });

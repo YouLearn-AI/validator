@@ -61,7 +61,12 @@ export function languageTag(language) {
   return typeof language === 'string' && LANGUAGE_TAG.test(language) ? language : 'en';
 }
 
-/** The print page's host and port, and whether it is on this machine; null when `url` is not http(s). */
+/**
+ * The print page's host and port, whether it is on this machine, and whether the service can open it; null when
+ * `url` is not http(s). The service's egress guard runs HTTPS-only (export-server.mjs): it lets through public
+ * addresses on port 443, and a print page on this machine by its exact host and port. Any other print page (plain
+ * http on another machine, https on another port) is refused on every navigation, so it is not `reachable`.
+ */
 export function printOrigin(url) {
   let parsed;
   try {
@@ -71,7 +76,9 @@ export function printOrigin(url) {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
   const port = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
-  return { origin: parsed.origin, host: parsed.hostname, port, loopback: LOOPBACK_HOSTS.has(parsed.hostname) };
+  const loopback = LOOPBACK_HOSTS.has(parsed.hostname);
+  const reachable = loopback || (parsed.protocol === 'https:' && port === 443);
+  return { origin: parsed.origin, host: parsed.hostname, port, loopback, reachable };
 }
 
 /** The print page for one language: EXPORT_PRINT_URL/<language>, English for anything that is not a tag. */
@@ -179,8 +186,9 @@ export function createExportRenderer(guardedBrowser, { printUrl, word = null, op
       timer = setTimeout(() => reject(new ExportTimeout(o.deadlineMs)), o.deadlineMs);
     });
     expired.catch(() => {});
+    let work = null;
     try {
-      const work = (async () => {
+      work = (async () => {
         const opened = await guardedBrowser.newContext({
           viewport: { ...o.viewport },
           // Print colours and backgrounds as the page sets them, light: the file is paper.
@@ -272,10 +280,11 @@ export function createExportRenderer(guardedBrowser, { printUrl, word = null, op
       ended = true;
       clearTimeout(timer);
       // A context that won't close (a page stuck in a loop holds its renderer) ends with Chromium: the next
-      // export launches a new one.
-      const closed = context
-        ? await within(context.close(), o.teardownMs).then(() => true, () => false)
-        : true;
+      // export launches a new one. A deadline that passed while the context was still opening has no context to
+      // close yet: the work closes it when it opens (above), and the renderer waits for that here, so the next
+      // export never runs beside it; a context that is still not open, or not closed, by then ends with Chromium too.
+      const closed = await within(context ? context.close() : Promise.allSettled([work]), o.teardownMs)
+        .then(() => true, () => false);
       if (!closed) {
         log.warn('[EXPORT] teardown stalled; resetting the browser');
         await guardedBrowser.reset().catch(() => {});

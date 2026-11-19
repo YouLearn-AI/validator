@@ -159,6 +159,11 @@ describe('printPageUrl, printOrigin and exportRequestAllowed', () => {
     assert.equal(printOrigin('http://localhost:3000/export-print').port, 3000);
     assert.equal(printOrigin('https://app.youlearn.ai/export-print').loopback, false);
     assert.equal(printOrigin('file:///etc/passwd'), null);
+    // What the HTTPS-only egress guard lets the service open: https on 443, or a page on this machine.
+    assert.equal(printOrigin('https://app.youlearn.ai/export-print').reachable, true);
+    assert.equal(printOrigin('http://localhost:3000/export-print').reachable, true);
+    assert.equal(printOrigin('http://app.youlearn.ai/export-print').reachable, false);
+    assert.equal(printOrigin('https://app.youlearn.ai:8443/export-print').reachable, false);
   });
   test('the page may load its own origin and HTTPS images, nothing else', () => {
     const origin = 'https://app.youlearn.ai';
@@ -359,8 +364,17 @@ describe('the egress guard, HTTPS-only (the export service)', () => {
   const tunnel = (target) => new Promise((resolve) => {
     const req = http.request({ host: '127.0.0.1', port: proxy.port, method: 'CONNECT', path: target });
     req.on('connect', (res, socket) => {
-      socket.destroy();
-      resolve(res.statusCode);
+      const done = () => {
+        socket.destroy();
+        resolve(res.statusCode);
+      };
+      if (res.statusCode !== 200) return done();
+      // The first byte of a TLS handshake, as a browser sends on an allowed tunnel: the outside server answers
+      // it (countingServer), so the test reads its counts only after the byte has arrived.
+      socket.on('error', done);
+      socket.once('data', done);
+      socket.once('close', done);
+      return socket.write(Buffer.from([0x16, 0x03, 0x01]));
     });
     req.on('error', () => resolve(0));
     req.end();
@@ -397,6 +411,7 @@ describe('the egress guard, HTTPS-only (the export service)', () => {
     assert.equal(outside.seen.connections, before.connections);
     assert.equal(await tunnel('outside.test:443'), 200);
     assert.equal(outside.seen.connections, before.connections + 1);
+    // The one connection that got through carried a TLS first byte, not a plain request.
     assert.equal(outside.seen.plainRequests, before.plainRequests);
   });
 
@@ -829,6 +844,42 @@ describe('export renderer in Chromium', { timeout: 180_000 }, () => {
   });
 });
 
+describe('a context that opens after the deadline', () => {
+  // A stand-in browser: only what a render touches before it has a page.
+  const lateBrowser = (opening) => {
+    const seen = { closed: 0, resets: 0 };
+    const context = { close: async () => { seen.closed += 1; } };
+    return {
+      seen,
+      browser: {
+        running: () => true,
+        newContext: () => opening(context),
+        reset: async () => { seen.resets += 1; },
+      },
+    };
+  };
+  const quiet = { info() {}, warn() {}, error() {}, log() {} };
+
+  test('is closed before the renderer takes the next export', async () => {
+    const { seen, browser } = lateBrowser((context) => new Promise((resolve) => { setTimeout(() => resolve(context), 300); }));
+    const render = createExportRenderer(browser, {
+      printUrl: 'https://print.test/export-print', log: quiet, options: { deadlineMs: 50, teardownMs: 2000 },
+    });
+    await assert.rejects(render(DOC), (e) => e instanceof ExportTimeout);
+    assert.equal(seen.closed, 1, 'the late context was closed before the render ended');
+    assert.equal(seen.resets, 0);
+  });
+
+  test('that never opens ends with the browser', async () => {
+    const { seen, browser } = lateBrowser(() => new Promise(() => {}));
+    const render = createExportRenderer(browser, {
+      printUrl: 'https://print.test/export-print', log: quiet, options: { deadlineMs: 50, teardownMs: 200 },
+    });
+    await assert.rejects(render(DOC), (e) => e instanceof ExportTimeout);
+    assert.equal(seen.resets, 1);
+  });
+});
+
 describe('WordConverter (pandoc in a worker thread)', { timeout: 60_000 }, () => {
   const html = '<p>Pressure <math><semantics><mi>p</mi><annotation encoding="application/x-tex">p</annotation></semantics></math></p>'
     + '<p><img src="picture-0.png" width="20" height="20" alt=""></p><p><img src="/etc/hosts" alt=""></p>';
@@ -844,6 +895,24 @@ describe('WordConverter (pandoc in a worker thread)', { timeout: 60_000 }, () =>
       assert.equal(missing, 1);
       assert.ok(xml.includes('<m:oMath>'));
       assert.ok(!xml.includes('localhost'), 'nothing from /etc/hosts');
+    } finally {
+      await word.close();
+    }
+  });
+
+  test('slices of a tall picture that sat inside a paragraph stay one paragraph each, with the text around them', async () => {
+    // export-docx.mjs puts each slice in a <p>; a picture inside a <p> (a Markdown image) then holds <p>s in a <p>.
+    const nested = '<p>before <p><img src="picture-0.png" width="20" height="20" alt=""></p>'
+      + '<p><img src="picture-1.png" width="20" height="20" alt=""></p> after</p>';
+    const word = new WordConverter();
+    try {
+      const pictures = [{ name: 'picture-0.png', bytes: pixel }, { name: 'picture-1.png', bytes: pixel }];
+      const { docx, missing } = await word.convert({ html: nested, pictures, language: 'en' }, 30_000);
+      const { xml } = docxParts(docx);
+      const drawn = docxParagraphs(xml).filter((p) => p.includes('<w:drawing>'));
+      assert.equal(missing, 0);
+      assert.equal(drawn.length, 2, 'each slice in a paragraph of its own');
+      assert.ok(xml.includes('before') && xml.includes('after'));
     } finally {
       await word.close();
     }
