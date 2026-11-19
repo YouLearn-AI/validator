@@ -9,6 +9,8 @@ import { errorCode, jsonErrorHandler } from './request-errors.mjs';
 // JSON body limits: /render-screenshot takes inline HTML up to 2 MB, every other route 256 KB.
 const DEFAULT_BODY_LIMIT = '256kb';
 const RENDER_BODY_LIMIT = '2mb';
+// POST /validate/latex's answer to a body with a "macros" field.
+const MACROS_REFUSED = '"macros" is not accepted';
 
 /**
  * The validator's Express app. server.mjs listens with the defaults; tests pass
@@ -64,6 +66,13 @@ export function createApp({
       return res.status(400).json({ valid: false, error: 'Body must include a non-empty "text" string' });
     }
 
+    // A caller's own KaTeX macros are refused before any work: KaTeX's time on them has no bound a check of the
+    // field could set (80 uses of a 2,000-letter macro held this thread 10.9 s on KaTeX 0.19.0, ops I-1237), and no
+    // caller sends them (the backend sends text alone).
+    if (req.body?.macros !== undefined) {
+      return res.status(400).json({ valid: false, error: MACROS_REFUSED });
+    }
+
     // Custom delimiters are checked before any work: an empty opening delimiter never moves the scan
     // forward and would hold this thread (ops I-743 F-08). Without them, the defaults apply.
     const delimiters = req.body?.delimiters;
@@ -73,7 +82,7 @@ export function createApp({
     }
 
     try {
-      const result = validateLatex(text, delimiters, req.body?.macros);
+      const result = validateLatex(text, delimiters);
       if (result.isValid) {
         return res.json({ valid: true });
       } else {

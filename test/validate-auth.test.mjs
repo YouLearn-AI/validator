@@ -14,7 +14,8 @@ import * as renderAuthModule from '../render-auth.mjs';
 const KEY = 'test-validate-key-0123456789';
 const ENV_NAMES = ['RENDER_API_KEY', 'RENDER_API_KEY_REQUIRED', 'VALIDATE_API_KEY_REQUIRED'];
 const VALIDATIONS = [
-  ['/validate/latex', { text: 'Area $x^2$' }],
+  // $$ math: the apps show math between single dollars as text, so the route fails it (ops I-1237).
+  ['/validate/latex', { text: 'Area $$x^2$$' }],
   ['/validate/mermaid', { diagram: 'graph TD; A-->B' }],
 ];
 
