@@ -149,13 +149,28 @@ describe('POST /validate/latex', () => {
     assert.equal(katexError.body.errors[0].position, 24);
   });
 
-  // Macros can't loop forever: KaTeX stops a self-expanding macro after maxExpand (1000) expansions. Those
-  // expansions can still multiply the work (macros or \def in the text alike); a field check can't bound that.
-  test('a macro that expands itself answers at once', async () => {
+  // A caller's own macros are refused before any work. KaTeX's time on them has no bound that a check of the field
+  // could set (80 uses of a 2,000-letter macro took 10.9 s on KaTeX 0.19.0), and no caller sends them: the
+  // backend sends text alone (ops I-1237, review 6).
+  const macrosRefused = { status: 400, body: { valid: false, error: '"macros" is not accepted' } };
+
+  test('refuses a macro that expands itself (400) before any work', async () => {
     const answer = await app.post({ text: 'a \\(\\loop\\) b', macros: { '\\loop': '\\loop' } });
     assert.notEqual(answer, TIMED_OUT, 'the request stalled');
-    assert.equal(answer.status, 400);
-    assert.match(answer.body.errors[0].message, /Too many expansions/);
+    assert.deepEqual(answer, macrosRefused);
+  });
+
+  test('refuses macros that would keep KaTeX busy for seconds, and macros of any value, with or without delimiters', async () => {
+    const slow = { text: `$$${'\\a'.repeat(80)}$$`, macros: { '\\a': 'x'.repeat(2000) } };
+    const answer = await app.post(slow);
+    assert.notEqual(answer, TIMED_OUT, 'the request stalled');
+    assert.deepEqual(answer, macrosRefused);
+    for (const macros of [{}, null, '\\a', [], 0, false]) {
+      assert.deepEqual(await app.post({ text: 'so $$x^2$$ holds', macros }), macrosRefused, JSON.stringify(macros));
+    }
+    const dollars = [delimiter('$$', '$$', true)];
+    assert.deepEqual(await app.post({ text: 'so $$x^2$$ holds', delimiters: dollars, macros: {} }), macrosRefused);
+    assert.deepEqual(await app.post({ text: 'so $$x^2$$ holds' }), { status: 200, body: { valid: true } });
   });
 });
 

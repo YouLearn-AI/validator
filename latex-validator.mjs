@@ -285,7 +285,7 @@ function findDelimiterAtPosition(
  * stopped. A delimiter's math is checked with KaTeX, a KaTeX environment whole. Quotes in the errors come from
  * `quoted`, a text of the same length (the original, when `text` blanks some of it out).
  */
-function scanDelimiters(text, delimiters, macros, errors, maxErrors, quoted = text) {
+function scanDelimiters(text, delimiters, errors, maxErrors, quoted = text) {
   let position = 0;
 
   // Create regex for finding opening delimiters
@@ -339,7 +339,7 @@ function scanDelimiters(text, delimiters, macros, errors, maxErrors, quoted = te
       ? text.slice(startPos, end)
       : text.slice(startPos + leftDelimLength, endPos);
 
-    const error = mathError(quoted, startPos, end, latexContent, delimiter.display, macros);
+    const error = mathError(quoted, startPos, end, latexContent, delimiter.display);
     if (error) errors.push(error);
 
     // Move position past the closing delimiter
@@ -353,10 +353,10 @@ function scanDelimiters(text, delimiters, macros, errors, maxErrors, quoted = te
  * The error for the math `text` holds from `start` to `end`, `math` as KaTeX is given it, or null when KaTeX draws
  * it. Math over MAX_MATH_LENGTH or holding a macro definition is null unread: KaTeX's time on it has no bound.
  */
-function mathError(text, start, end, math, displayMode, macros, hint = "") {
+function mathError(text, start, end, math, displayMode, hint = "") {
   if (math.length > MAX_MATH_LENGTH || MACRO_DEFINITION.test(math)) return null;
   try {
-    katex.renderToString(math, { displayMode, macros, throwOnError: true });
+    katex.renderToString(math, { displayMode, throwOnError: true });
     return null;
   } catch (error) {
     return katexError(text, start, end, error.message, hint);
@@ -451,7 +451,7 @@ const PROSE_DELIMITERS = defaultDelimiters.filter(({ left }) => {
  * Stops after MAX_ERRORS errors or refused openers (each refused opener may cost a pass over the rest of the text);
  * `truncated` says the text may hold more, and a text the check did not finish is not valid.
  */
-function validateAsAppsDraw(text, macros) {
+function validateAsAppsDraw(text) {
   const limit = MAX_ERRORS + 1;
   const reading = readAsApps(text);
   const parts = [];
@@ -495,7 +495,7 @@ function validateAsAppsDraw(text, macros) {
       const bare = part.delimiter.open.startsWith("\\begin{")
         ? `. The apps draw a bare ${part.delimiter.open} by its body alone: put it inside $$ ... $$.`
         : "";
-      const error = mathError(text, part.start, part.end, part.content, part.display, macros, bare);
+      const error = mathError(text, part.start, part.end, part.content, part.display, bare);
       if (error) errors.push(error);
     }
     blanked.push([part.start, part.end]);
@@ -506,7 +506,7 @@ function validateAsAppsDraw(text, macros) {
   if (errors.length < limit) {
     const outside = blankOut(text, blanked);
     const end = stoppedEarly ? proseStart : text.length;
-    scanDelimiters(outside.slice(0, end), PROSE_DELIMITERS, macros, errors, limit, text);
+    scanDelimiters(outside.slice(0, end), PROSE_DELIMITERS, errors, limit, text);
   }
   // Every opener the stop counted sat in a citation (one outside would be an error above), so name the stop itself:
   // the backend repairs a failing text from its errors.
@@ -548,14 +548,13 @@ function blankOut(text, spans, fill = " ") {
  * Validates LaTeX formatting in a string
  * @param text The text to validate
  * @param delimiters Optional custom delimiters; without them, the text is checked as the apps draw it
- * @param macros Optional KaTeX macros
  * @returns Validation result with any errors found, at most MAX_ERRORS; `truncated` when the scan stopped there
  *   with text left, so the text may hold more
  */
-export function validateLatex(text, delimiters, macros) {
-  if (delimiters === undefined) return validateAsAppsDraw(text, macros);
+export function validateLatex(text, delimiters) {
+  if (delimiters === undefined) return validateAsAppsDraw(text);
   const errors = [];
-  const position = scanDelimiters(text, delimiters, macros, errors, MAX_ERRORS);
+  const position = scanDelimiters(text, delimiters, errors, MAX_ERRORS);
   return {
     isValid: errors.length === 0,
     errors,
@@ -678,15 +677,13 @@ export function formatValidationErrors(
  * Simple validation function that returns a boolean
  * @param text The text to validate
  * @param delimiters Optional custom delimiters
- * @param macros Optional KaTeX macros
  * @returns True if valid, false if invalid
  */
 export function isValidLatex(
   text,
-  delimiters,
-  macros
+  delimiters
 ) {
-  return validateLatex(text, delimiters, macros).isValid;
+  return validateLatex(text, delimiters).isValid;
 }
 
 /**
