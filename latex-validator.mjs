@@ -120,6 +120,10 @@ const MAX_ERRORS = 50;
 const MAX_MATH_LENGTH = 8000;
 // KaTeX's commands that define a macro (katex/src/macros.js and functions/def.js).
 const MACRO_DEFINITION = /\\(?:[gex]?def|let|futurelet|global|(?:re)?newcommand|providecommand)(?![A-Za-z])/;
+// KaTeX's default strict mode, "warn", writes one stderr line for each LaTeX-incompatible character, such as each
+// CJK character in math: 10 formulas of 7,990 characters wrote 79,900 lines, 10.4 MB (ops I-1237, review 6).
+// "ignore" draws and throws exactly as "warn" does, without the line (katex/src/strict.ts, handleStrict).
+const KATEX_STRICT = "ignore";
 
 /**
  * Why custom delimiters can't be used, or null when they can: an array of 1 to MAX_DELIMITERS objects, each
@@ -356,7 +360,7 @@ function scanDelimiters(text, delimiters, errors, maxErrors, quoted = text) {
 function mathError(text, start, end, math, displayMode, hint = "") {
   if (math.length > MAX_MATH_LENGTH || MACRO_DEFINITION.test(math)) return null;
   try {
-    katex.renderToString(math, { displayMode, throwOnError: true });
+    katex.renderToString(math, { displayMode, throwOnError: true, strict: KATEX_STRICT });
     return null;
   } catch (error) {
     return katexError(text, start, end, error.message, hint);
@@ -589,6 +593,7 @@ export function validateLatexUsingSplitter(
             displayMode: chunk.display,
             macros,
             throwOnError: true,
+            strict: KATEX_STRICT,
           });
         } catch (katexError) {
           const chunkLength = chunk.rawData?.length || chunk.data.length;

@@ -62,6 +62,16 @@ describe('math in $$, as the apps draw it (I-1237)', () => {
     assert.deepEqual(validateLatex('$$E = mc^2 【12】$$').errors, []);
     assert.deepEqual(types('$$\\frac{a}{b} x}$$'), ['shown_as_text', 'unclosed']);
   });
+
+  // KaTeX's default strict mode wrote one stderr line per CJK character in math: 10 formulas of 7,990 characters
+  // wrote 79,900 lines (ops I-1237, review 6). The check gives the same verdicts without them.
+  test('CJK text in math keeps its verdict and writes no KaTeX warning', (t) => {
+    const warn = t.mock.method(console, 'warn');
+    assert.deepEqual(validateLatex('面积 $$S = 长 \\times 宽$$ 和 \\(周长 = 2(a+b)\\)').errors, []);
+    assert.deepEqual(types('面积 $$\\frac{长}$$'), ['katex_error']);
+    assert.deepEqual(validateLatex('面积 $$S = 长$$', [{ left: '$$', right: '$$', display: true }]).errors, []);
+    assert.equal(warn.mock.callCount(), 0);
+  });
 });
 
 describe('bare environments, as the apps draw them (I-1237)', () => {
