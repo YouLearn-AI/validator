@@ -572,13 +572,11 @@ export function validateLatex(text, delimiters) {
  * This approach leverages the same parsing logic used in production
  * @param text The text to validate
  * @param delimiters Optional custom delimiters
- * @param macros Optional KaTeX macros
  * @returns Validation result
  */
 export function validateLatexUsingSplitter(
   text,
-  delimiters = defaultDelimiters,
-  macros
+  delimiters = defaultDelimiters
 ) {
   const errors = [];
   
@@ -592,7 +590,6 @@ export function validateLatexUsingSplitter(
         try {
           katex.renderToString(chunk.data, {
             displayMode: chunk.display,
-            macros,
             throwOnError: true,
             strict: KATEX_STRICT,
           });
