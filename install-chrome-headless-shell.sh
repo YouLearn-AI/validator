@@ -13,11 +13,11 @@
 # first (`curl -I` gives x-goog-hash md5=...). When that Stable is a newer major than the Chromium this Playwright
 # bundles (node_modules/playwright-core/browsers.json), run the test suite against the same version first, with
 # CHROMIUM_EXECUTABLE_PATH set to Chrome for Testing's headless shell for your platform (ops I-1343: Playwright
-# 1.64.1 bundles 156 and passes on 157.0.8103.38 and 157.0.8103.50).
+# 1.64.1 bundles 156 and passes on 157.0.8103.38 and 157.0.8103.50; ops I-1865: and on 158.0.8127.36).
 set -eu
 
-VERSION=157.0.8103.50
-SHA256=7bf0d41e424efd1d6281c4162993ab9dc5de92fac213c211614905a71c057d0f
+VERSION=158.0.8127.36
+SHA256=2d3a23017323c54fd457a678e4351f895c4076d8050e39d5aa6247f93448b73a
 
 zip=/tmp/chrome-headless-shell-linux64.zip
 apt-get update

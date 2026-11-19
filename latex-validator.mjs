@@ -1,17 +1,19 @@
 import katex from "katex";
 
-// Types (copied from local types to be self-contained)
+// What the scan looks for when a caller sends no delimiters (the backend sends none). The math environments,
+// equation to array, are checked whole and in display mode, as the web app's first list had them (frontend
+// d68a9e104a): KaTeX draws equation and align only in display mode.
 export const defaultDelimiters = [
   { left: "\\(", right: "\\)", display: false },
   { left: "\\[", right: "\\]", display: true },
-  { left: "\\begin{equation}", right: "\\end{equation}", display: false },
-  { left: "\\begin{align}", right: "\\end{align}", display: false },
-  { left: "\\begin{align*}", right: "\\end{align*}", display: false },
-  { left: "\\begin{cases}", right: "\\end{cases}", display: false },
-  { left: "\\begin{matrix}", right: "\\end{matrix}", display: false },
-  { left: "\\begin{bmatrix}", right: "\\end{bmatrix}", display: false },
-  { left: "\\begin{pmatrix}", right: "\\end{pmatrix}", display: false },
-  { left: "\\begin{array}", right: "\\end{array}", display: false },
+  { left: "\\begin{equation}", right: "\\end{equation}", display: true },
+  { left: "\\begin{align}", right: "\\end{align}", display: true },
+  { left: "\\begin{align*}", right: "\\end{align*}", display: true },
+  { left: "\\begin{cases}", right: "\\end{cases}", display: true },
+  { left: "\\begin{matrix}", right: "\\end{matrix}", display: true },
+  { left: "\\begin{bmatrix}", right: "\\end{bmatrix}", display: true },
+  { left: "\\begin{pmatrix}", right: "\\end{pmatrix}", display: true },
+  { left: "\\begin{array}", right: "\\end{array}", display: true },
   { left: "\\section*{", right: "}", display: false },
   { left: "\\section{", right: "}", display: false },
   { left: "\\subsection*{", right: "}", display: false },
@@ -35,11 +37,45 @@ export const defaultDelimiters = [
   { left: "\\overline{", right: "}", display: false },
 ];
 
+// Every environment KaTeX defines (node_modules/katex/src/environments/array.ts; the same set in 0.16.22 and 0.19.0,
+// ops I-515). A delimiter pair \begin{name} ... \end{name} for one of these is checked whole, its \begin and \end
+// included, as KaTeX's auto-render passes it (contrib/auto-render/splitAtDelimiters.js). Its body alone is not valid
+// TeX: '&' and '\\' separate cells and rows only inside the environment, so valid cases and matrices were flagged
+// (ops I-1691).
+// Environments KaTeX lacks (itemize, theorem, tabular, ...) keep the body check.
+export const KATEX_ENVIRONMENTS = new Set([
+  "array", "darray", "subarray",
+  "matrix", "pmatrix", "bmatrix", "Bmatrix", "vmatrix", "Vmatrix", "smallmatrix",
+  "matrix*", "pmatrix*", "bmatrix*", "Bmatrix*", "vmatrix*", "Vmatrix*",
+  "cases", "dcases", "rcases", "drcases",
+  "align", "align*", "aligned", "split", "alignat", "alignat*", "alignedat",
+  "gather", "gather*", "gathered",
+  "equation", "equation*",
+  "CD",
+]);
+
+const ENVIRONMENT_OPENER = /^\\begin\{([^{}]+)\}$/;
+
+/**
+ * Whether a delimiter pair is one KaTeX environment's \begin and \end, which is checked whole.
+ * @param {{ left: string, right: string }} delimiter
+ */
+function isKatexEnvironment({ left, right }) {
+  const name = ENVIRONMENT_OPENER.exec(left)?.[1];
+  return name !== undefined && KATEX_ENVIRONMENTS.has(name) && right === `\\end{${name}}`;
+}
+
 // Limits for custom delimiters from a caller (POST /validate/latex, ops I-743 F-08). A caller's set replaces the
 // 31 defaults (the backend sends none); 64 entries is about twice the default set, and 64 characters over three times
 // its longest delimiter (18).
 const MAX_DELIMITERS = 64;
 const MAX_DELIMITER_LENGTH = 64;
+
+// The scan stops at this many errors. Each unclosed opener scans to the end of the text, so a text of them took
+// time in the square of its length on Node's only thread: 32 KB of "\(" took 3.3 s, and 170 KB, the most a 256 KB
+// body holds, 46 s, with a 17.6 MB answer listing every error (ops I-1238). The cap bounds a check to 50 such
+// scans and its error list to 50 entries.
+const MAX_ERRORS = 50;
 
 /**
  * Why custom delimiters can't be used, or null when they can: an array of 1 to MAX_DELIMITERS objects, each
@@ -86,32 +122,41 @@ function escapeRegex(text) {
   return text.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
 }
 
-function findEndOfMath(
-  delimiterValue,
-  text,
-  startIndex,
-) {
-  let index = startIndex;
+/**
+ * Where the delimiter opened before `start` closes, or -1. A closer counts only outside braces, and a backslash
+ * escapes the character after it. In a KaTeX environment, its own \begin opens a nested one that the next
+ * \end closes first, so a matrix inside a matrix ends at the outer \end.
+ * @param {string} text
+ * @param {number} start The first index after the opening delimiter.
+ * @param {{ left: string, right: string }} delimiter
+ */
+function findClose(text, start, delimiter) {
+  const nests = isKatexEnvironment(delimiter);
+  let index = start;
   let braceLevel = 0;
-
-  const delimLength = delimiterValue.length;
+  let depth = 0;
 
   while (index < text.length) {
-    const character = text[index];
+    if (braceLevel <= 0 && text.startsWith(delimiter.right, index)) {
+      if (depth === 0) return index;
+      depth--;
+      index += delimiter.right.length;
+      continue;
+    }
+    if (nests && braceLevel <= 0 && text.startsWith(delimiter.left, index)) {
+      depth++;
+      index += delimiter.left.length;
+      continue;
+    }
 
-    if (
-      braceLevel <= 0 &&
-      text.slice(index, index + delimLength) === delimiterValue
-    ) {
-      return index;
-    } else if (character === "\\") {
+    const character = text[index];
+    if (character === "\\") {
       index++;
     } else if (character === "{") {
       braceLevel++;
     } else if (character === "}") {
       braceLevel--;
     }
-
     index++;
   }
 
@@ -150,7 +195,7 @@ function splitAtDelimiters(
     }
     // ... so this always succeeds:
     const i = delimiters.findIndex((delim) => text.startsWith(delim.left));
-    index = findEndOfMath(delimiters[i].right, text, delimiters[i].left.length);
+    index = findClose(text, delimiters[i].left.length, delimiters[i]);
     if (index === -1) {
       break;
     }
@@ -196,7 +241,8 @@ function findDelimiterAtPosition(
  * @param text The text to validate
  * @param delimiters Optional custom delimiters (defaults to the ones from markdown.tsx)
  * @param macros Optional KaTeX macros
- * @returns Validation result with any errors found
+ * @returns Validation result with any errors found; `truncated` when the scan stopped at MAX_ERRORS before the
+ *   end of the text, so the text may hold more
  */
 export function validateLatex(
   text,
@@ -205,7 +251,6 @@ export function validateLatex(
 ) {
   const errors = [];
   let position = 0;
-  const originalText = text;
 
   // Create regex for finding opening delimiters
   const regexLeft = new RegExp(
@@ -213,9 +258,9 @@ export function validateLatex(
   );
 
   // Each pass must start past the previous one; an empty delimiter would start every pass at the same place.
-  // The inner closing scan below always moves forward (searchPos++ on every pass).
+  // The closing scan (findClose) always moves forward.
   let previousStart = -1;
-  while (position < text.length) {
+  while (position < text.length && errors.length < MAX_ERRORS) {
     if (position <= previousStart) {
       throw new LatexScanStalled(position);
     }
@@ -239,11 +284,6 @@ export function validateLatex(
     const { delimiter } = delimiterInfo;
     const startPos = position;
     const leftDelimLength = delimiter.left.length;
-    
-    // Find the closing delimiter
-    let endPos = -1;
-    let searchPos = position + leftDelimLength;
-    let braceLevel = 0;
 
     // Special handling for delimiters with empty right side (like \item)
     if (delimiter.right === "") {
@@ -251,26 +291,7 @@ export function validateLatex(
       continue;
     }
 
-    while (searchPos < text.length) {
-      const char = text[searchPos];
-      
-      if (
-        braceLevel <= 0 &&
-        text.slice(searchPos).startsWith(delimiter.right)
-      ) {
-        endPos = searchPos;
-        break;
-      } else if (char === "\\") {
-        searchPos++; // Skip escaped character
-      } else if (char === "{") {
-        braceLevel++;
-      } else if (char === "}") {
-        braceLevel--;
-      }
-      
-      searchPos++;
-    }
-
+    const endPos = findClose(text, position + leftDelimLength, delimiter);
     if (endPos === -1) {
       // Unclosed delimiter
       errors.push({
@@ -284,9 +305,11 @@ export function validateLatex(
       continue;
     }
 
-    // Extract the LaTeX content
-    const latexContent = text.slice(position + leftDelimLength, endPos);
-    
+    const end = endPos + delimiter.right.length;
+    const latexContent = isKatexEnvironment(delimiter)
+      ? text.slice(startPos, end)
+      : text.slice(startPos + leftDelimLength, endPos);
+
     // Validate the LaTeX syntax with KaTeX
     try {
       katex.renderToString(latexContent, {
@@ -298,19 +321,20 @@ export function validateLatex(
       errors.push({
         message: `Invalid LaTeX syntax: ${katexError.message}`,
         position: startPos,
-        length: endPos + delimiter.right.length - startPos,
-        latex: text.slice(startPos, endPos + delimiter.right.length),
+        length: end - startPos,
+        latex: text.slice(startPos, end),
         type: "katex_error",
       });
     }
 
     // Move position past the closing delimiter
-    position = endPos + delimiter.right.length;
+    position = end;
   }
 
   return {
     isValid: errors.length === 0,
     errors,
+    truncated: errors.length >= MAX_ERRORS && position < text.length,
   };
 }
 
