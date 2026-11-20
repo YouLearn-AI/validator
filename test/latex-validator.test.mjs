@@ -149,13 +149,28 @@ describe('POST /validate/latex', () => {
     assert.equal(katexError.body.errors[0].position, 24);
   });
 
-  // Macros can't loop forever: KaTeX stops a self-expanding macro after maxExpand (1000) expansions. Those
-  // expansions can still multiply the work (macros or \def in the text alike); a field check can't bound that.
-  test('a macro that expands itself answers at once', async () => {
+  // A caller's own macros are refused before any work. KaTeX's time on them has no bound that a check of the field
+  // could set (80 uses of a 2,000-letter macro took 10.9 s on KaTeX 0.19.0), and no caller sends them: the
+  // backend sends text alone (ops I-1237, review 6).
+  const macrosRefused = { status: 400, body: { valid: false, error: '"macros" is not accepted' } };
+
+  test('refuses a macro that expands itself (400) before any work', async () => {
     const answer = await app.post({ text: 'a \\(\\loop\\) b', macros: { '\\loop': '\\loop' } });
     assert.notEqual(answer, TIMED_OUT, 'the request stalled');
-    assert.equal(answer.status, 400);
-    assert.match(answer.body.errors[0].message, /Too many expansions/);
+    assert.deepEqual(answer, macrosRefused);
+  });
+
+  test('refuses macros that would keep KaTeX busy for seconds, and macros of any value, with or without delimiters', async () => {
+    const slow = { text: `$$${'\\a'.repeat(80)}$$`, macros: { '\\a': 'x'.repeat(2000) } };
+    const answer = await app.post(slow);
+    assert.notEqual(answer, TIMED_OUT, 'the request stalled');
+    assert.deepEqual(answer, macrosRefused);
+    for (const macros of [{}, null, '\\a', [], 0, false]) {
+      assert.deepEqual(await app.post({ text: 'so $$x^2$$ holds', macros }), macrosRefused, JSON.stringify(macros));
+    }
+    const dollars = [delimiter('$$', '$$', true)];
+    assert.deepEqual(await app.post({ text: 'so $$x^2$$ holds', delimiters: dollars, macros: {} }), macrosRefused);
+    assert.deepEqual(await app.post({ text: 'so $$x^2$$ holds' }), { status: 200, body: { valid: true } });
   });
 });
 
@@ -191,19 +206,66 @@ describe('the scan never repeats a pass in place', () => {
 describe('the scan stops at 50 errors (I-1238)', () => {
   const KB = 1024;
   const CAP = 50;
+  // Each with the error type the apps' reading gives it (I-1237): a bare cases is text, and an opener whose \\)
+  // sits inside braces closes there in the apps, around math whose braces don't pair.
   const unclosed = [
-    ['unclosed \\(', '\\('.repeat(128 * KB)],
-    ['unclosed \\begin{cases}', '\\begin{cases}'.repeat(20 * KB)],
-    ['openers whose \\) sits inside braces', `${'\\( '.repeat(80 * KB)}{\\)}`],
-    ['prose with a stray \\( in each sentence', 'A sentence of prose with a stray \\( in it. '.repeat(6 * KB)],
+    ['unclosed \\(', '\\('.repeat(128 * KB), 'unclosed'],
+    ['unclosed \\begin{cases}', '\\begin{cases}'.repeat(20 * KB), 'shown_as_text'],
+    ['openers whose \\) sits inside braces', `${'\\( '.repeat(80 * KB)}{\\)}`, 'shown_as_text'],
+    ['prose with a stray \\( in each sentence', 'A sentence of prose with a stray \\( in it. '.repeat(6 * KB), 'unclosed'],
+    // The apps' reading (I-1237): bare openers they would draw, $$ they never close across a blank line, math
+    // between single dollars, and openers between code spans.
+    ['unclosed bare \\begin{equation}', '\\begin{equation}'.repeat(16 * KB), 'unclosed'],
+    ['$$ before blank lines', '$$\n\n'.repeat(64 * KB), 'unclosed'],
+    ['math between single dollars', '$x^2$ '.repeat(42 * KB), 'shown_as_text'],
+    ['an unclosed \\( after each code span', '`a` \\( '.repeat(36 * KB), 'unclosed'],
   ];
-  for (const [name, text] of unclosed) {
+  for (const [name, text, type] of unclosed) {
     test(`${name}, about 256 KB, answers at once with the first 50 errors`, async () => {
       const answer = await callInWorker('validateLatex', text);
       assert.notEqual(answer, TIMED_OUT, 'the scan stalled');
       assert.equal(answer.result.errors.length, CAP);
       assert.equal(answer.result.truncated, true);
-      assert.ok(answer.result.errors.every((error) => error.type === 'unclosed'));
+      assert.ok(answer.result.errors.every((error) => error.type === type));
+    });
+  }
+
+  // The apps' citation pattern backtracks on long whitespace runs: Codex's first review of I-1237 found the first
+  // shape took 8.67 s when the port ran it, even on at most 512 characters from each 【.
+  const citations = [
+    ['citations whose bbox runs on in spaces', `$$${'【1, bbox: '.concat(' '.repeat(400)).repeat(600)}{$$`, 2],
+    ['citations whose source runs on unclosed', `$$${'【1, source: '.concat('a'.repeat(400)).repeat(600)}{$$`, 2],
+    ['citations inside code spans', '`【1, bbox: '.concat(' '.repeat(300), '` ').repeat(700), 0],
+    ['openers of citations that never close', '【'.repeat(128 * KB), 0],
+  ];
+  for (const [name, text, count] of citations) {
+    test(`${name}, about 256 KB, answers at once`, async () => {
+      const answer = await callInWorker('validateLatex', text);
+      assert.notEqual(answer, TIMED_OUT, 'the scan stalled');
+      assert.equal(answer.result.errors.length, count);
+    });
+  }
+
+  // KaTeX's own time grows faster than what it draws: one $$ formula of 160,000 letters took 8.5 s (Codex review 4),
+  // and a 2,168-character formula that defines a 2,000-letter macro and uses it 80 times over 10 s (Codex review 5).
+  // \( \) and custom delimiters reach KaTeX too. Math over 8,000 characters or defining a macro passes unread.
+  const defined = (define) => `${define}{${'x'.repeat(2_000)}}${'\\a'.repeat(80)}`;
+  const longMath = [
+    ['one $$ formula of 250,000 letters', [`$$${'x'.repeat(250_000)}$$`], []],
+    ['one \\( formula of 250,000 letters', [`\\(${'x'.repeat(250_000)}\\)`], []],
+    ['one formula of 250,000 letters in custom delimiters', [`<m>${'x'.repeat(250_000)}</m>`, [delimiter('<m>', '</m>')]], []],
+    ['31 $$ formulas of 8,000 letters, the longest read', [`$$${'x'.repeat(8_000)}$$ `.repeat(31)], []],
+    ['an 8,001-letter formula with an error, unread', [`$$\\oops ${'x'.repeat(7_995)}$$`], []],
+    ['and an 8,000-letter one, read', [`$$\\oops ${'x'.repeat(7_994)}$$`], [['katex_error', 0]]],
+    ...['\\def\\a', '\\gdef\\a', '\\edef\\a', '\\xdef\\a', '\\newcommand{\\a}', '\\renewcommand{\\a}', '\\providecommand{\\a}']
+      .map((define) => [`110 $$ formulas that ${define} 2,000 letters and use it 80 times`, [`$$${defined(define)}$$ `.repeat(110)], []]),
+    ['\\let and \\global\\def in \\( and custom delimiters', [`\\(\\let\\b=x ${defined('\\global\\def\\a')}\\) <m>${defined('\\def\\a')}</m>`.repeat(50), [delimiter('\\(', '\\)'), delimiter('<m>', '</m>')]], []],
+  ];
+  for (const [name, args, want] of longMath) {
+    test(`${name}, about 250 KB, answers at once`, async () => {
+      const answer = await callInWorker('validateLatex', ...args);
+      assert.notEqual(answer, TIMED_OUT, 'the check stalled');
+      assert.deepEqual(answer.result.errors.map(({ type, position }) => [type, position]), want);
     });
   }
 
@@ -232,6 +294,27 @@ describe('the scan stops at 50 errors (I-1238)', () => {
       assert.equal(answer.status, 400);
       assert.equal(answer.body.errors.length, CAP);
       assert.equal(answer.body.error, 'Found 50 LaTeX error(s), then stopped; the text may hold more');
+    } finally {
+      await app.stop();
+    }
+  });
+
+  test('POST /validate/latex passes math it does not read, and names a stop in citations as an error', async () => {
+    const app = new AppInWorker();
+    await app.start();
+    try {
+      // No repair for math this check has no verdict on (Codex review 5).
+      const long = await app.post({ text: `Area $$${'x'.repeat(160_000)}$$` });
+      assert.notEqual(long, TIMED_OUT, 'the request stalled');
+      assert.deepEqual([long.status, long.body], [200, { valid: true }]);
+      const macro = await app.post({ text: `So $$\\def\\a{${'x'.repeat(2_000)}}${'\\a'.repeat(80)}$$` });
+      assert.notEqual(macro, TIMED_OUT, 'the request stalled');
+      assert.deepEqual([macro.status, macro.body], [200, { valid: true }]);
+      // Every opener the stop counted sits in a source chip, which the apps hide (Codex review 4).
+      const hidden = await app.post({ text: `【3, source: "${'\\('.repeat(51)}"】` });
+      assert.equal(hidden.status, 400);
+      assert.deepEqual(hidden.body.errors.map(({ type, position }) => [type, position]), [['stopped', 13 + 50 * 2]]);
+      assert.equal(hidden.body.error, 'Found 1 LaTeX error(s), then stopped; the text may hold more');
     } finally {
       await app.stop();
     }
