@@ -2,7 +2,8 @@
 # Same base and browser as the validator's Dockerfile plus Debian's ffmpeg, which has libx264 (Playwright's
 # own ffmpeg writes only VP9 WebM, which iMessage refuses).
 # The same image runs the interactive layout checker (ops I-610) as a service of its own, with its own entry
-# point: Cloud Run `--command node --args check-server.mjs`.
+# point: Cloud Run `--command node --args check-server.mjs`. So does the PDF renderer (ops I-1177):
+# `--command node --args pdf-server.mjs`.
 FROM node:24.22.1-slim
 
 WORKDIR /app
