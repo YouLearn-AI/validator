@@ -20,7 +20,7 @@
 
 import { chromium } from 'playwright';
 import { startEgressProxy } from './egress-guard.mjs';
-import { describeProcesses } from './proc-snapshot.mjs';
+import { describeProcesses, ProcReadTimeout } from './proc-snapshot.mjs';
 
 /** The browser binary to launch: the image's pinned one, or Playwright's own when unset (a local run). */
 export function browserExecutablePath(env = process.env) {
@@ -70,19 +70,19 @@ export class GuardedBrowser {
    *   process, so the video service exits then: Playwright's exit handler kills the stuck Chromium's process
    *   group and removes its profile, and browser() refuses from then on. Before that, one line says what the
    *   processes under this one were doing (proc-snapshot.mjs, ops I-2278).
-   * @param {string} [options.procRoot] where /proc is (tests only: a fake process table)
+   * @param {object} [options.proc] options for describeProcesses (tests only: a fake process table, a deadline)
    */
   constructor({
     guard = {}, sandbox = sandboxEnabled(), executablePath = browserExecutablePath(), log = console, killable = false,
     launchBrowser = (o) => chromium.launch(o), launchServer = (o) => chromium.launchServer(o),
-    launchTimeoutMs = LAUNCH_TIMEOUT_MS, onStuckLaunch = null, procRoot = '/proc',
+    launchTimeoutMs = LAUNCH_TIMEOUT_MS, onStuckLaunch = null, proc = {},
   } = {}) {
     this.killable = killable;
     this.launchBrowser = launchBrowser;
     this.launchServer = launchServer;
     this.launchTimeoutMs = launchTimeoutMs;
     this.onStuckLaunch = onStuckLaunch;
-    this.procRoot = procRoot;
+    this.procOptions = proc;
     this.stuck = false;
     this.guardOptions = { log, ...guard };
     this.sandbox = sandbox;
@@ -132,11 +132,7 @@ export class GuardedBrowser {
       if (this.stuck) return;
       this.stuck = true;
       this.log.error('[RENDER_BROWSER] Chromium did not get ready in time');
-      // Read while onStuckLaunch's exit waits; it changes nothing and never throws.
-      describeProcesses({ procRoot: this.procRoot }).then(
-        (fields) => this.log.error(`[RENDER_BROWSER] stuck launch ${fields}`),
-        () => this.log.error('[RENDER_BROWSER] stuck launch unreadable'),
-      );
+      this.reportStuckLaunch();
       this.onStuckLaunch?.();
     });
     if (generation !== this.generation) {
@@ -161,6 +157,27 @@ export class GuardedBrowser {
     }
     this.current = { browser, kill: () => server.kill() };
     return browser;
+  }
+
+  // What Chromium's processes are doing, read while onStuckLaunch's exit waits. It changes nothing, and nothing in
+  // it can end the process sooner: a logger that throws is ignored and the chain ends in a handler that can't throw.
+  reportStuckLaunch() {
+    const write = (line) => {
+      try {
+        this.log.error(line);
+      } catch {
+        // The exit that follows matters more than this line.
+      }
+    };
+    describeProcesses(this.procOptions)
+      .then(
+        (fields) => write(`[RENDER_BROWSER] stuck launch ${fields}`),
+        (error) => {
+          const reason = error instanceof ProcReadTimeout ? 'timeout' : 'error';
+          write(`[RENDER_BROWSER] stuck launch unreadable reason=${reason}`);
+        },
+      )
+      .catch(() => {});
   }
 
   async browser() {
