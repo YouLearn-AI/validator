@@ -69,17 +69,20 @@ export function createCheckApp({ checkLayout, key = process.env.RENDER_API_KEY |
  * since the GuardedBrowser's onStuckLaunch ends the process.
  * @param {import('express').Express} app
  * @param {import('./guarded-browser.mjs').GuardedBrowser} browser
- * @param {{ port?: number|string, host?: string, log?: Console, closing?: () => boolean }} [options]
+ * @param {{ port?: number|string, host?: string, log?: Console, closing?: () => boolean, tag?: string, name?: string }} [options]
+ *   tag and name: the service's log tag and name (the export renderer, export-server.mjs, starts the same way)
  * @returns {Promise<import('node:http').Server|null>} the listening server, or null when the launch got stuck or
  *   the process is shutting down
  */
-export async function listenWhenReady(app, browser, { port, host, log = console, closing = () => false } = {}) {
+export async function listenWhenReady(app, browser, {
+  port, host, log = console, closing = () => false, tag = 'CHECK_LAYOUT', name = 'Layout checker',
+} = {}) {
   const t0 = Date.now();
   try {
     await browser.browser();
-    log.log(`[CHECK_LAYOUT] browser ready ms=${Date.now() - t0}`);
+    log.log(`[${tag}] browser ready ms=${Date.now() - t0}`);
   } catch (error) {
-    log.error(`[CHECK_LAYOUT] browser start failed code=${errorCode(error)}`);
+    log.error(`[${tag}] browser start failed code=${errorCode(error)}`);
     if (browser.stuck) return null;
   }
   // Shutting down while Chromium started (SIGTERM): the port never opens.
@@ -92,7 +95,7 @@ export async function listenWhenReady(app, browser, { port, host, log = console,
         reject(error);
         return;
       }
-      log.log(`Layout checker listening on port ${server.address().port}`);
+      log.log(`${name} listening on port ${server.address().port}`);
       resolve(server);
     });
   });

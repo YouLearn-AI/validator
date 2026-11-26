@@ -16,7 +16,8 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts
+# Dev dependencies stay out: pdfjs-dist only reads the export tests' PDFs (ops I-1313).
+RUN npm ci --ignore-scripts --omit=dev
 # Chromium's system libraries and fonts, without Playwright's own browser download
 RUN npx playwright install-deps chromium
 
